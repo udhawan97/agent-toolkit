@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "bundles": {
+    "graphify": {
+      "kind": "graphify",
+      "displayName": "Graphify",
+      "description": "Build and query a persistent knowledge graph for a codebase.",
+      "homepage": "https://github.com/Graphify-Labs/graphify",
+      "license": "Apache-2.0",
+      "package": "graphifyy",
+      "version": "0.9.50",
+      "clients": ["codex", "claude"]
+    },
+    "matt-pocock-skills": {
+      "kind": "skills-package",
+      "displayName": "Matt Pocock's Skills",
+      "description": "Engineering and productivity workflows for planning, TDD, review, handoff, and delivery.",
+      "homepage": "https://github.com/mattpocock/skills",
+      "license": "MIT",
+      "repository": "mattpocock/skills",
+      "commit": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
+      "installer": "skills",
+      "installerVersion": "1.5.23",
+      "expectedSkills": {
+        "ask-matt": "skills/engineering/ask-matt",
+        "code-review": "skills/engineering/code-review",
+        "codebase-design": "skills/engineering/codebase-design",
+        "diagnosing-bugs": "skills/engineering/diagnosing-bugs",
+        "domain-modeling": "skills/engineering/domain-modeling",
+        "grill-with-docs": "skills/engineering/grill-with-docs",
+        "implement": "skills/engineering/implement",
+        "improve-codebase-architecture": "skills/engineering/improve-codebase-architecture",
+        "prototype": "skills/engineering/prototype",
+        "research": "skills/engineering/research",
+        "resolving-merge-conflicts": "skills/engineering/resolving-merge-conflicts",
+        "setup-matt-pocock-skills": "skills/engineering/setup-matt-pocock-skills",
+        "tdd": "skills/engineering/tdd",
+        "to-spec": "skills/engineering/to-spec",
+        "to-tickets": "skills/engineering/to-tickets",
+        "triage": "skills/engineering/triage",
+        "wayfinder": "skills/engineering/wayfinder",
+        "wizard": "skills/engineering/wizard",
+        "claude-handoff": "skills/in-progress/claude-handoff",
+        "implement-spec": "skills/in-progress/implement-spec",
+        "loop-me": "skills/in-progress/loop-me",
+        "retro": "skills/in-progress/retro",
+        "setup-ts-deep-modules": "skills/in-progress/setup-ts-deep-modules",
+        "writing-beats": "skills/in-progress/writing-beats",
+        "writing-fragments": "skills/in-progress/writing-fragments",
+        "writing-shape": "skills/in-progress/writing-shape",
+        "git-guardrails-claude-code": "skills/misc/git-guardrails-claude-code",
+        "migrate-to-shoehorn": "skills/misc/migrate-to-shoehorn",
+        "scaffold-exercises": "skills/misc/scaffold-exercises",
+        "setup-pre-commit": "skills/misc/setup-pre-commit",
+        "grill-me": "skills/productivity/grill-me",
+        "grilling": "skills/productivity/grilling",
+        "handoff": "skills/productivity/handoff",
+        "teach": "skills/productivity/teach",
+        "to-questionnaire": "skills/productivity/to-questionnaire",
+        "wait-what": "skills/productivity/wait-what",
+        "writing-for-agents": "skills/productivity/writing-for-agents"
+      },
+      "clients": ["codex", "claude"]
+    },
+    "diagram-design": {
+      "kind": "marketplace",
+      "displayName": "Diagram Design",
+      "description": "Editorial architecture and technical diagrams.",
+      "homepage": "https://github.com/cathrynlavery/diagram-design",
+      "license": "MIT",
+      "repository": "cathrynlavery/diagram-design",
+      "ref": "main",
+      "marketplace": "diagram-design",
+      "plugins": ["diagram-design"],
+      "clients": ["codex", "claude"]
+    },
+    "ponytail": {
+      "kind": "marketplace",
+      "displayName": "Ponytail",
+      "description": "A deliberately minimal solution-size discipline.",
+      "homepage": "https://github.com/DietrichGebert/ponytail",
+      "license": "MIT",
+      "repository": "DietrichGebert/ponytail",
+      "ref": "main",
+      "marketplace": "ponytail",
+      "plugins": ["ponytail"],
+      "clients": ["codex", "claude"]
+    },
+    "understand-anything": {
+      "kind": "marketplace",
+      "displayName": "Understand Anything",
+      "description": "Interactive codebase knowledge graphs and architecture exploration.",
+      "homepage": "https://github.com/Egonex-AI/Understand-Anything",
+      "license": "MIT",
+      "repository": "Egonex-AI/Understand-Anything",
+      "ref": "main",
+      "marketplace": "understand-anything",
+      "plugins": ["understand-anything"],
+      "clients": ["codex", "claude"]
+    },
+    "openai-essentials": {
+      "kind": "codex-official",
+      "displayName": "OpenAI Essentials",
+      "description": "Official Codex workflows for app building, visualization, security, and OpenAI development.",
+      "homepage": "https://github.com/openai/plugins",
+      "license": "Per package",
+      "repository": "openai/plugins",
+      "ref": "main",
+      "marketplace": "openai-curated",
+      "runtimeReserved": true,
+      "fallbackMarketplace": "agent-toolkit-openai-essentials",
+      "plugins": [
+        "build-macos-apps",
+        "build-web-apps",
+        "build-web-data-visualization",
+        "codex-security",
+        "openai-developers"
+      ],
+      "clients": ["codex"]
+    },
+    "anthropic-essentials": {
+      "kind": "marketplace",
+      "displayName": "Anthropic Essentials",
+      "description": "Anthropic-authored workflows plus clearly attributed partner packages from its managed marketplace.",
+      "homepage": "https://github.com/anthropics/claude-plugins-official",
+      "license": "Apache-2.0",
+      "repository": "anthropics/claude-plugins-official",
+      "marketplace": "claude-plugins-official",
+      "plugins": [
+        "claude-code-setup",
+        "claude-md-management",
+        "code-review",
+        "code-simplifier",
+        "feature-dev",
+        "frontend-design",
+        "playwright",
+        "security-guidance",
+        "skill-creator",
+        "superpowers"
+      ],
+      "provenance": {
+        "playwright": {
+          "provider": "Microsoft",
+          "repository": "microsoft/playwright-mcp",
+          "relationship": "curated partner package"
+        },
+        "superpowers": {
+          "provider": "Jesse Vincent / obra",
+          "repository": "obra/superpowers",
+          "commit": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+          "relationship": "curated partner package"
+        }
+      },
+      "clients": ["claude"]
+    },
+    "obscura": {
+      "kind": "obscura",
+      "displayName": "Obscura",
+      "description": "A local browser engine and MCP server for agent-driven web work.",
+      "homepage": "https://github.com/h4ckf0r0day/obscura",
+      "license": "Apache-2.0",
+      "repository": "h4ckf0r0day/obscura",
+      "version": "0.2.1",
+      "clients": ["codex", "claude"],
+      "assets": {
+        "linux-aarch64": {
+          "name": "obscura-aarch64-linux.tar.gz",
+          "sha256": "0297c26d583f598f0126a7271cc40750598a9a9cbd86d1d6f79b2b99097d5244",
+          "binarySha256": "11ea2f03be8118fd4f50d6a1d68d75c12b5f1b8630ff9d71a02cf785a5b66c44",
+          "workerSha256": "0f96f514e3789ecc294a55afaa14ec697b752b162d2064e5ac428e972204368f"
+        },
+        "linux-x86_64": {
+          "name": "obscura-x86_64-linux.tar.gz",
+          "sha256": "6a1a66b3f1ab118fa7d31330894a868617aea68c06d75436d851356c39df1ed3",
+          "binarySha256": "80153abcd279328f92c11903866df5911a90577d95633d329fe886db00abb332",
+          "workerSha256": "509fbdbeb2e0cb7caf6c46cf905a6052f3ad6012487c1bdcdf405e3319ec0902"
+        },
+        "macos-aarch64": {
+          "name": "obscura-aarch64-macos.tar.gz",
+          "sha256": "5233da6426ec16667d7e4374b824189c6dfb3b325e5cf3fb5f04c7bc48b52a0f",
+          "binarySha256": "6d07bced7d92f52f955b1407e817100bd649bcf08481d056f80fa4863a0b515a",
+          "workerSha256": "c1c012a69f840f93b68aad925229b5a5d8cac5bf5d1010b980dd686132595ba2"
+        },
+        "macos-x86_64": {
+          "name": "obscura-x86_64-macos.tar.gz",
+          "sha256": "e6d0f8719998fa4460bccc712b20a1e524717d5c54e943f345227bd893ec9620",
+          "binarySha256": "0c98b5a5742ce912ec01483f58a53b366e3761c91258f518be4016dcb996f41c",
+          "workerSha256": "96f9b1819a9fe811b0bf972e5af32a5b4ef5c9751fa53f83b216224a08871e35"
+        },
+        "windows-x86_64": {
+          "name": "obscura-x86_64-windows.zip",
+          "sha256": "202e7705c30b00026dcc3d493e1d5ef4ffb436767aaf84baaec11c7ff15a1a09",
+          "binarySha256": "2b5a919846f7bb12b2e08f6de7afb5bac75548bd85e5c8a5fc654769b53e00c8",
+          "workerSha256": "1ecc0780d78a13a1ed57fabad09dd4804f31852562be401f49555c1078fe5083"
+        }
+      }
+    }
+  }
+}

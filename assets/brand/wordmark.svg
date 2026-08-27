@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 220" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Toolkit</title>
+  <desc id="desc">One portable toolkit for Codex and Claude Code.</desc>
+  <rect width="1080" height="220" rx="36" fill="#07111f"/>
+  <g transform="translate(38 30) scale(.98)">
+    <path d="M18 51H55L73 69" fill="none" stroke="#36d7ff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M18 109H55L73 91" fill="none" stroke="#9c6cff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M87 69L105 51H142" fill="none" stroke="#36d7ff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M87 91L105 109H142" fill="none" stroke="#9c6cff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M80 43L112 61V99L80 117L48 99V61Z" fill="#101a29" stroke="#f5c36a" stroke-width="3"/>
+    <path d="M80 43L112 61L80 80L48 61Z" fill="#ffd783"/>
+    <path d="M48 61L80 80V117L48 99Z" fill="#d98c26"/>
+    <path d="M112 61L80 80V117L112 99Z" fill="#f2aa3f"/>
+  </g>
+  <text x="235" y="102" fill="#f7f9fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="66" font-weight="760" letter-spacing="-2">Agent Toolkit</text>
+  <text x="238" y="151" fill="#9fb1c8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="25" font-weight="500">One portable setup · Codex + Claude Code</text>
+  <circle cx="986" cy="82" r="7" fill="#36d7ff"/>
+  <circle cx="1014" cy="82" r="7" fill="#9c6cff"/>
+  <circle cx="1000" cy="112" r="7" fill="#f5c36a"/>
+</svg>

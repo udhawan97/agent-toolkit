@@ -1,0 +1,6 @@
+{
+  "description": "Owned workflows plus upstream skill packages, without MCP servers or provider plugin bundles",
+  "plugins": ["evidence-workflows"],
+  "upstreams": ["graphify", "matt-pocock-skills"],
+  "guidance": true
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Every public-safe owned and upstream package in the allowlisted catalog",
+  "plugins": ["evidence-workflows"],
+  "upstreams": [
+    "graphify",
+    "matt-pocock-skills",
+    "diagram-design",
+    "ponytail",
+    "understand-anything",
+    "openai-essentials",
+    "anthropic-essentials",
+    "obscura"
+  ],
+  "guidance": true
+}

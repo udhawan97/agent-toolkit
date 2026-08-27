@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Toolkit lifecycle</title>
+  <desc id="desc">The setup checks prerequisites, detects clients, installs the owned and allowlisted upstream layers, verifies health, and supports explicit maintenance.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0a1626"/><stop offset="1" stop-color="#050a12"/></linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#526c89"/></marker>
+  </defs>
+  <rect width="1200" height="320" rx="30" fill="url(#bg)"/>
+  <text x="60" y="58" fill="#91a5bd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" letter-spacing="3">THE SAFE FAST PATH</text>
+  <g fill="none" stroke="#526c89" stroke-width="3" marker-end="url(#arrow)">
+    <path d="M238 170H292"/><path d="M468 170H522"/><path d="M698 170H752"/><path d="M928 170H982"/>
+  </g>
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+    <g transform="translate(52 100)"><rect width="186" height="140" rx="22" fill="#10243a" stroke="#36d7ff"/><circle cx="38" cy="38" r="19" fill="#143b58"/><text x="38" y="44" text-anchor="middle" fill="#79e5ff" font-size="17" font-weight="700">1</text><text x="24" y="85" fill="#f7f9fc" font-size="22" font-weight="700">Preflight</text><text x="24" y="113" fill="#9fb5cc" font-size="15">Tools · sources</text></g>
+    <g transform="translate(282 100)"><rect width="186" height="140" rx="22" fill="#111f34" stroke="#4fbcef"/><circle cx="38" cy="38" r="19" fill="#173450"/><text x="38" y="44" text-anchor="middle" fill="#9bdfff" font-size="17" font-weight="700">2</text><text x="24" y="85" fill="#f7f9fc" font-size="22" font-weight="700">Detect</text><text x="24" y="113" fill="#9fb5cc" font-size="15">Codex · Claude</text></g>
+    <g transform="translate(512 100)"><rect width="186" height="140" rx="22" fill="#171a34" stroke="#8972f7"/><circle cx="38" cy="38" r="19" fill="#292552"/><text x="38" y="44" text-anchor="middle" fill="#c8baff" font-size="17" font-weight="700">3</text><text x="24" y="85" fill="#f7f9fc" font-size="22" font-weight="700">Install</text><text x="24" y="113" fill="#b5afd0" font-size="15">Owned + upstream</text></g>
+    <g transform="translate(742 100)"><rect width="186" height="140" rx="22" fill="#201c2e" stroke="#b681d6"/><circle cx="38" cy="38" r="19" fill="#3c294e"/><text x="38" y="44" text-anchor="middle" fill="#e4c2fa" font-size="17" font-weight="700">4</text><text x="24" y="85" fill="#f7f9fc" font-size="22" font-weight="700">Doctor</text><text x="24" y="113" fill="#c1b0ca" font-size="15">Plugins · tools · MCP</text></g>
+    <g transform="translate(972 100)"><rect width="176" height="140" rx="22" fill="#292118" stroke="#f5c36a"/><circle cx="38" cy="38" r="19" fill="#4c381d"/><text x="38" y="44" text-anchor="middle" fill="#ffe3a4" font-size="17" font-weight="700">5</text><text x="24" y="85" fill="#f7f9fc" font-size="22" font-weight="700">Maintain</text><text x="24" y="113" fill="#c9bda7" font-size="15">Update · core remove</text></g>
+  </g>
+  <text x="600" y="281" text-anchor="middle" fill="#8295aa" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Nothing runs on download. You start every lifecycle action explicitly.</text>
+</svg>

@@ -1,0 +1,138 @@
+#!/bin/sh
+set -eu
+
+TOOLKIT_REPO="${AGENT_KIT_REPO:-udhawan97/agent-toolkit}"
+TOOLKIT_REPO_URL="${AGENT_KIT_REPO_URL:-https://github.com/${TOOLKIT_REPO}.git}"
+TOOLKIT_CHANNEL="${AGENT_KIT_CHANNEL:-stable}"
+TOOLKIT_DATA_ROOT="${XDG_DATA_HOME:-${HOME}/.local/share}"
+TOOLKIT_SOURCE_DIR="${AGENT_KIT_SOURCE_DIR:-${TOOLKIT_DATA_ROOT}/agent-toolkit}"
+TOOLKIT_LEGACY_ROOT="${AGENT_KIT_LEGACY_ROOT:-0ef3ac2ab866ac157e94d43b3104d8797489bd7f}"
+
+usage() {
+  cat <<'EOF'
+Agent Toolkit setup
+
+Usage:
+  setup [install|update|doctor|uninstall] [agent-kit options]
+
+Examples:
+  setup
+  setup install --clients both --profile recommended
+  setup update
+  setup doctor --native
+  setup uninstall --remove-guidance
+
+Environment:
+  AGENT_KIT_CHANNEL       stable (default) or main
+  AGENT_KIT_SOURCE_DIR    managed source checkout location
+EOF
+}
+
+fail() {
+  printf 'Agent Toolkit setup: %s\n' "$1" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "$1 is required but was not found on PATH"
+}
+
+find_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "python3"
+  elif command -v python >/dev/null 2>&1; then
+    printf '%s\n' "python"
+  else
+    fail "Python 3.10 or newer is required"
+  fi
+}
+
+verify_origin() {
+  origin_url=$(git -C "$TOOLKIT_SOURCE_DIR" remote get-url origin 2>/dev/null || true)
+  case "$origin_url" in
+    "$TOOLKIT_REPO_URL"|"https://github.com/${TOOLKIT_REPO}"|"https://github.com/${TOOLKIT_REPO}.git"|"git@github.com:${TOOLKIT_REPO}"|"git@github.com:${TOOLKIT_REPO}.git") ;;
+    *) fail "existing checkout has an unexpected origin: ${origin_url:-none}" ;;
+  esac
+}
+
+ensure_checkout() {
+  case "$TOOLKIT_CHANNEL" in
+    stable|main) ;;
+    *) fail "AGENT_KIT_CHANNEL must be stable or main" ;;
+  esac
+  case "$TOOLKIT_SOURCE_DIR" in
+    ""|/|"$HOME") fail "refusing unsafe AGENT_KIT_SOURCE_DIR: $TOOLKIT_SOURCE_DIR" ;;
+  esac
+
+  if [ -d "$TOOLKIT_SOURCE_DIR/.git" ]; then
+    verify_origin
+    if [ -n "$(git -C "$TOOLKIT_SOURCE_DIR" status --porcelain)" ]; then
+      fail "managed checkout has local changes; review them before updating $TOOLKIT_SOURCE_DIR"
+    fi
+    git -C "$TOOLKIT_SOURCE_DIR" fetch origin "$TOOLKIT_CHANNEL"
+    current_head=$(git -C "$TOOLKIT_SOURCE_DIR" rev-parse HEAD)
+    if [ "$current_head" = "$TOOLKIT_LEGACY_ROOT" ] && ! git -C "$TOOLKIT_SOURCE_DIR" merge-base --is-ancestor "$current_head" FETCH_HEAD; then
+      legacy_backup="${TOOLKIT_SOURCE_DIR}.legacy-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+      printf 'Agent Toolkit setup: preserving the legacy checkout at %s\n' "$legacy_backup"
+      mv "$TOOLKIT_SOURCE_DIR" "$legacy_backup"
+      git clone --depth 1 --branch "$TOOLKIT_CHANNEL" "$TOOLKIT_REPO_URL" "$TOOLKIT_SOURCE_DIR"
+      return
+    fi
+    current_branch=$(git -C "$TOOLKIT_SOURCE_DIR" branch --show-current)
+    if [ "$current_branch" = "$TOOLKIT_CHANNEL" ]; then
+      git -C "$TOOLKIT_SOURCE_DIR" merge --ff-only FETCH_HEAD
+    elif git -C "$TOOLKIT_SOURCE_DIR" show-ref --verify --quiet "refs/heads/$TOOLKIT_CHANNEL"; then
+      git -C "$TOOLKIT_SOURCE_DIR" checkout "$TOOLKIT_CHANNEL"
+      git -C "$TOOLKIT_SOURCE_DIR" merge --ff-only FETCH_HEAD
+    else
+      git -C "$TOOLKIT_SOURCE_DIR" checkout -b "$TOOLKIT_CHANNEL" FETCH_HEAD
+    fi
+    current_head=$(git -C "$TOOLKIT_SOURCE_DIR" rev-parse HEAD)
+    fetched_head=$(git -C "$TOOLKIT_SOURCE_DIR" rev-parse FETCH_HEAD)
+    if [ "$current_head" != "$fetched_head" ]; then
+      fail "managed checkout does not exactly match origin/$TOOLKIT_CHANNEL; refusing to execute local changes"
+    fi
+  elif [ -e "$TOOLKIT_SOURCE_DIR" ] && [ -n "$(ls -A "$TOOLKIT_SOURCE_DIR" 2>/dev/null)" ]; then
+    fail "source directory exists and is not an Agent Toolkit checkout: $TOOLKIT_SOURCE_DIR"
+  else
+    mkdir -p "$(dirname "$TOOLKIT_SOURCE_DIR")"
+    git clone --depth 1 --branch "$TOOLKIT_CHANNEL" "$TOOLKIT_REPO_URL" "$TOOLKIT_SOURCE_DIR"
+  fi
+}
+
+action="${1:-install}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+case "$action" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  install|update|doctor|uninstall) ;;
+  *)
+    usage >&2
+    fail "unknown action: $action"
+    ;;
+esac
+
+require_command git
+python_command=$(find_python)
+"$python_command" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else "Python 3.10 or newer is required")'
+ensure_checkout
+
+case "$action" in
+  install)
+    exec "$python_command" "$TOOLKIT_SOURCE_DIR/bin/agent-kit" install --source github --repo "$TOOLKIT_REPO" --channel "$TOOLKIT_CHANNEL" "$@"
+    ;;
+  update)
+    exec "$python_command" "$TOOLKIT_SOURCE_DIR/bin/agent-kit" update "$@"
+    ;;
+  doctor)
+    exec "$python_command" "$TOOLKIT_SOURCE_DIR/bin/agent-kit" doctor "$@"
+    ;;
+  uninstall)
+    exec "$python_command" "$TOOLKIT_SOURCE_DIR/bin/agent-kit" uninstall "$@"
+    ;;
+esac

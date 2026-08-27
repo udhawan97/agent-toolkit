@@ -1,0 +1,15 @@
+{
+  "description": "The complete public-safe dual-agent setup with owned workflows, trusted upstream skills, provider essentials, and local browser tooling",
+  "plugins": ["evidence-workflows"],
+  "upstreams": [
+    "graphify",
+    "matt-pocock-skills",
+    "diagram-design",
+    "ponytail",
+    "understand-anything",
+    "openai-essentials",
+    "anthropic-essentials",
+    "obscura"
+  ],
+  "guidance": true
+}

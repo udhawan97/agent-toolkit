@@ -1,0 +1,1041 @@
+#!/usr/bin/env python3
+"""Install and verify allowlisted upstream tools without vendoring their code."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+import zipfile
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+CATALOG_PATH = ROOT / "catalog" / "upstreams.json"
+STATE_DIR = Path.home() / ".agent-toolkit"
+STATE_FILE = STATE_DIR / "upstreams.json"
+
+
+class UpstreamError(RuntimeError):
+    pass
+
+
+def load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UpstreamError(f"Cannot read valid JSON from {path}: {exc}") from exc
+
+
+def run(
+    command: list[str],
+    *,
+    dry_run: bool = False,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str] | None:
+    print("+ " + " ".join(command))
+    if dry_run:
+        return None
+    completed = subprocess.run(command, check=False, text=True, capture_output=capture)
+    if check and completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise UpstreamError(f"Command failed ({completed.returncode}): {' '.join(command)}\n{detail}")
+    return completed
+
+
+def run_json(command: list[str]) -> Any:
+    completed = run(command, capture=True)
+    assert completed is not None
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise UpstreamError(f"Command did not return JSON: {' '.join(command)}") from exc
+
+
+def ensure_private_directory(path: Path) -> None:
+    for candidate in (path, *path.parents):
+        if candidate.is_symlink():
+            raise UpstreamError(f"Refusing to use toolkit state through a symlink: {candidate}")
+        if candidate == Path.home():
+            break
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        os.chmod(path, 0o700)
+
+
+def save_receipt(profile: str, clients: list[str], bundles: list[str]) -> None:
+    ensure_private_directory(STATE_DIR)
+    if STATE_FILE.is_symlink():
+        raise UpstreamError(f"Refusing symlinked upstream receipt: {STATE_FILE}")
+    payload = {
+        "schemaVersion": 1,
+        "profile": profile,
+        "clients": clients,
+        "bundles": bundles,
+        "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "note": "Upstream packages remain owned and maintained by their source providers.",
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=STATE_DIR, prefix=".upstreams-", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if temporary.is_symlink() or not temporary.is_file():
+            raise UpstreamError(f"Refusing unsafe upstream receipt temporary: {temporary}")
+        os.replace(temporary, STATE_FILE)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary.exists() or temporary.is_symlink():
+            temporary.unlink()
+
+
+def selected_clients(raw: str) -> list[str]:
+    clients = [item for item in raw.split(",") if item]
+    if not clients or any(item not in {"codex", "claude"} for item in clients):
+        raise UpstreamError("--clients must be a comma-separated subset of codex,claude")
+    missing = [item for item in clients if not shutil.which(item)]
+    if missing:
+        raise UpstreamError("Requested client is not available on PATH: " + ", ".join(missing))
+    return clients
+
+
+def profile_bundles(profile: str) -> list[str]:
+    data = load_json(ROOT / "profiles" / f"{profile}.json")
+    bundles = data.get("upstreams") if isinstance(data, dict) else None
+    if not isinstance(bundles, list) or not all(isinstance(item, str) for item in bundles):
+        raise UpstreamError(f"Profile has an invalid upstreams list: {profile}")
+    return bundles
+
+
+def catalog_bundles() -> dict[str, dict[str, Any]]:
+    data = load_json(CATALOG_PATH)
+    bundles = data.get("bundles") if isinstance(data, dict) else None
+    if data.get("schemaVersion") != 1 or not isinstance(bundles, dict):
+        raise UpstreamError("Unsupported upstream catalog schema")
+    return bundles
+
+
+def clients_for(bundle: dict[str, Any], clients: list[str]) -> list[str]:
+    supported = bundle.get("clients", [])
+    return [client for client in clients if client in supported]
+
+
+def normalize_repo(value: str) -> str | None:
+    candidate = value.strip().rstrip("/")
+    match = re.fullmatch(
+        r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)?"
+        r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?",
+        candidate,
+        re.IGNORECASE,
+    )
+    return f"{match.group('owner')}/{match.group('repo')}".lower() if match else None
+
+
+def managed_tool_executable(name: str) -> str | None:
+    suffix = ".exe" if os.name == "nt" else ""
+    managers = (
+        ("uv", ["tool", "dir", "--bin"]),
+        ("pipx", ["environment", "--value", "PIPX_BIN_DIR"]),
+    )
+    for manager, arguments in managers:
+        binary = shutil.which(manager)
+        if not binary:
+            continue
+        completed = subprocess.run(
+            [binary, *arguments], check=False, text=True, capture_output=True
+        )
+        candidate = Path(completed.stdout.strip()) / f"{name}{suffix}"
+        if completed.returncode == 0 and candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def graphify_command(bundle: dict[str, Any]) -> list[str]:
+    del bundle
+    executable = managed_tool_executable("graphify")
+    if executable:
+        return [executable]
+    raise UpstreamError("Graphify is not on PATH. Run setup again after adding the uv or pipx tool bin directory to PATH.")
+
+
+def install_graphify(bundle: dict[str, Any], clients: list[str], dry_run: bool) -> None:
+    package = f"{bundle['package']}=={bundle['version']}"
+    uv = shutil.which("uv")
+    pipx = shutil.which("pipx")
+    if uv:
+        run([uv, "tool", "install", "--upgrade", package], dry_run=dry_run)
+    elif pipx:
+        run([pipx, "install", "--force", package], dry_run=dry_run)
+    else:
+        raise UpstreamError(
+            "Graphify needs uv or pipx for an isolated install. Install one of them, then rerun setup."
+        )
+    command = graphify_command(bundle) if not dry_run else ["graphify"]
+    for client in clients_for(bundle, clients):
+        run([*command, "install", "--platform", client], dry_run=dry_run)
+        if not dry_run:
+            sync_graphify_discovery(client)
+
+
+def sync_graphify_discovery(client: str) -> None:
+    defaults = {
+        "codex": Path.home() / ".codex" / "skills" / "graphify",
+        "claude": Path.home() / ".claude" / "skills" / "graphify",
+    }
+    configured = {
+        "codex": Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+        / "skills"
+        / "graphify",
+        "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+        / "skills"
+        / "graphify",
+    }
+    source = defaults[client]
+    target = configured[client]
+    if target == source:
+        return
+    source_marker = source / ".graphify_version"
+    target_marker = target / ".graphify_version"
+    if target.exists() and not target_marker.is_file():
+        raise UpstreamError(f"Refusing to overwrite an unmanaged Graphify skill at {target}")
+    if target_marker.is_file() and not source_marker.is_file():
+        return
+    if target_marker.is_file() and source_marker.is_file():
+        if target_marker.read_text(encoding="utf-8") == source_marker.read_text(encoding="utf-8"):
+            return
+    if not (source / "SKILL.md").is_file() or not source_marker.is_file():
+        raise UpstreamError(f"Graphify did not create its expected {client} discovery package")
+    print(f"+ mirror Graphify discovery package into configured {client} home: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target, dirs_exist_ok=True)
+
+
+def doctor_graphify(bundle: dict[str, Any], clients: list[str]) -> int:
+    try:
+        command = graphify_command(bundle)
+        version = run([*command, "--version"], capture=True)
+        assert version is not None
+        observed = (version.stdout or version.stderr).strip()
+        if bundle["version"] not in observed:
+            raise UpstreamError(f"expected {bundle['version']}, found {observed or 'unknown version'}")
+        print(f"PASS upstream Graphify: {observed}")
+    except UpstreamError as exc:
+        print(f"FAIL upstream Graphify: {exc}")
+        return 1
+    failures = 0
+    homes = {
+        "codex": Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+        / "skills"
+        / "graphify"
+        / "SKILL.md",
+        "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+        / "skills"
+        / "graphify"
+        / "SKILL.md",
+    }
+    generic = Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+    for client in clients_for(bundle, clients):
+        healthy = homes[client].is_file() or generic.is_file()
+        print(f"{'PASS' if healthy else 'FAIL'} upstream Graphify discovery: {client}")
+        failures += 0 if healthy else 1
+    return failures
+
+
+def git_value(path: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(path), *arguments], check=False, text=True, capture_output=True
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout.strip()
+
+
+def checkout_problem(
+    path: Path,
+    repository: str,
+    *,
+    expected_commit: str | None = None,
+    tracking_ref: str | None = None,
+) -> str | None:
+    if path.is_symlink() or not path.is_dir() or not git_checkout_matches(path, repository):
+        return "checkout is missing or has an unexpected origin"
+    if git_value(path, "status", "--porcelain"):
+        return "checkout has local modifications"
+    head = git_value(path, "rev-parse", "HEAD")
+    if expected_commit and head != expected_commit:
+        return f"HEAD {head or 'unknown'} does not match pinned commit {expected_commit}"
+    if tracking_ref:
+        tracked = git_value(path, "rev-parse", f"refs/remotes/origin/{tracking_ref}")
+        if not tracked or head != tracked:
+            return f"HEAD does not exactly match refs/remotes/origin/{tracking_ref}"
+    return None
+
+
+def ensure_pinned_skills_checkout(bundle: dict[str, Any], dry_run: bool) -> Path:
+    git = shutil.which("git")
+    if not git:
+        raise UpstreamError("Matt Pocock's skills require Git on PATH.")
+    checkout = STATE_DIR / "sources" / "matt-pocock-skills"
+    repository = bundle["repository"]
+    commit = bundle["commit"]
+    if checkout.is_symlink():
+        raise UpstreamError(f"Refusing symlinked Matt Pocock skills source: {checkout}")
+    if not checkout.exists():
+        if not dry_run:
+            ensure_private_directory(checkout.parent)
+        run([git, "clone", f"https://github.com/{repository}.git", str(checkout)], dry_run=dry_run)
+    elif not git_checkout_matches(checkout, repository):
+        raise UpstreamError(f"Refusing unexpected Matt Pocock skills source at {checkout}")
+    if dry_run:
+        print(f"+ pin Matt Pocock skills checkout to {commit}")
+        return checkout
+    if git_value(checkout, "status", "--porcelain"):
+        raise UpstreamError(f"Refusing modified Matt Pocock skills checkout: {checkout}")
+    run([git, "-C", str(checkout), "fetch", "origin", commit])
+    run([git, "-C", str(checkout), "checkout", "--detach", commit])
+    problem = checkout_problem(checkout, repository, expected_commit=commit)
+    if problem:
+        raise UpstreamError(f"Matt Pocock skills source verification failed: {problem}")
+    return checkout
+
+
+def install_skills_package(bundle: dict[str, Any], clients: list[str], dry_run: bool) -> None:
+    npx = shutil.which("npx")
+    if not npx:
+        raise UpstreamError("Matt Pocock's skills require Node.js with npx on PATH.")
+    agent_names = ["codex" if item == "codex" else "claude-code" for item in clients_for(bundle, clients)]
+    if not agent_names:
+        return
+    checkout = ensure_pinned_skills_checkout(bundle, dry_run)
+    command = [
+        npx,
+        "--yes",
+        f"{bundle['installer']}@{bundle['installerVersion']}",
+        "add",
+        str(checkout),
+        "--global",
+        "--agent",
+        *agent_names,
+        "--skill",
+        "*",
+        "--yes",
+        "--copy",
+        "--full-depth",
+    ]
+    run(command, dry_run=dry_run)
+
+
+def skill_tree_manifest(path: Path) -> dict[str, tuple[str, str]]:
+    if path.is_symlink() or not path.is_dir():
+        raise UpstreamError(f"skill directory is missing or symlinked: {path}")
+    manifest: dict[str, tuple[str, str]] = {}
+    for current, directories, files in os.walk(path, followlinks=False):
+        current_path = Path(current)
+        for name in sorted(directories):
+            candidate = current_path / name
+            relative = candidate.relative_to(path).as_posix()
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise UpstreamError(f"skill tree contains an unsafe directory: {relative}")
+            manifest[relative] = ("directory", "")
+        for name in sorted(files):
+            candidate = current_path / name
+            relative = candidate.relative_to(path).as_posix()
+            if candidate.is_symlink() or not candidate.is_file():
+                raise UpstreamError(f"skill tree contains an unsafe file: {relative}")
+            manifest[relative] = ("file", hashlib.sha256(candidate.read_bytes()).hexdigest())
+    return manifest
+
+
+def skill_tree_problem(source: Path, installed: Path) -> str | None:
+    try:
+        expected = skill_tree_manifest(source)
+        observed = skill_tree_manifest(installed)
+    except UpstreamError as exc:
+        return str(exc)
+    if expected == observed:
+        return None
+    missing = sorted(set(expected) - set(observed))
+    extra = sorted(set(observed) - set(expected))
+    changed = sorted(
+        name for name in set(expected) & set(observed) if expected[name] != observed[name]
+    )
+    details = []
+    if missing:
+        details.append("missing " + ", ".join(missing[:3]))
+    if extra:
+        details.append("extra " + ", ".join(extra[:3]))
+    if changed:
+        details.append("changed " + ", ".join(changed[:3]))
+    return "; ".join(details) or "skill trees differ"
+
+
+def doctor_skills_package(bundle: dict[str, Any], clients: list[str]) -> int:
+    checkout = STATE_DIR / "sources" / "matt-pocock-skills"
+    problem = checkout_problem(
+        checkout, bundle["repository"], expected_commit=bundle["commit"]
+    )
+    if problem:
+        print(f"FAIL upstream Matt Pocock skills source: {problem}")
+        return 1
+    failures = 0
+    expected = bundle["expectedSkills"]
+    canonical = Path.home() / ".agents" / "skills"
+    client_roots = {
+        "codex": canonical,
+        "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "skills",
+    }
+    for name, relative in expected.items():
+        source = checkout / relative
+        installed = canonical / name
+        source_problem = skill_tree_problem(source, installed)
+        if source_problem:
+            print(f"FAIL upstream Matt Pocock skill source: {name} ({source_problem})")
+            failures += 1
+            continue
+        for client in clients_for(bundle, clients):
+            discovered = client_roots[client] / name
+            discovery_problem = skill_tree_problem(source, discovered)
+            if discovery_problem:
+                print(
+                    f"FAIL upstream Matt Pocock skill discovery: {name} ({client}: {discovery_problem})"
+                )
+                failures += 1
+    if not failures:
+        print(f"PASS upstream Matt Pocock skills: {len(expected)} pinned skills discovered by {', '.join(clients)}")
+    return failures
+
+
+def marketplace_entries(client: str) -> list[dict[str, Any]]:
+    if client == "codex":
+        data = run_json(["codex", "plugin", "marketplace", "list", "--json"])
+        return data.get("marketplaces", []) if isinstance(data, dict) else []
+    data = run_json(["claude", "plugin", "marketplace", "list", "--json"])
+    return data if isinstance(data, list) else []
+
+
+def marketplace_entry(client: str, name: str) -> dict[str, Any] | None:
+    return next((entry for entry in marketplace_entries(client) if entry.get("name") == name), None)
+
+
+def marketplace_repo(client: str, entry: dict[str, Any]) -> str | None:
+    if client == "codex":
+        return normalize_repo(str(entry.get("marketplaceSource", {}).get("source", "")))
+    return normalize_repo(str(entry.get("repo", "")))
+
+
+def ensure_marketplace(bundle: dict[str, Any], client: str, dry_run: bool) -> None:
+    name = bundle["marketplace"]
+    entry = marketplace_entry(client, name)
+    expected = normalize_repo(bundle["repository"])
+    if entry:
+        actual = marketplace_repo(client, entry)
+        if actual != expected:
+            raise UpstreamError(
+                f"Refusing conflicting {name} marketplace for {client}: expected {expected}, found {actual or 'unknown'}"
+            )
+        print(f"= trusted upstream marketplace already registered: {name} ({client})")
+        return
+    command = [client, "plugin", "marketplace", "add", bundle["repository"]]
+    if client == "codex" and bundle.get("ref"):
+        command += ["--ref", bundle["ref"]]
+    command += ["--json"] if client == "codex" else ["--scope", "user"]
+    run(command, dry_run=dry_run)
+    if not dry_run:
+        registered = marketplace_entry(client, name)
+        actual = marketplace_repo(client, registered or {})
+        if actual != expected:
+            raise UpstreamError(
+                f"Marketplace source verification failed for {name} ({client}): {actual or 'unknown'}"
+            )
+
+
+def plugin_entries(client: str) -> list[dict[str, Any]]:
+    if client == "codex":
+        data = run_json(["codex", "plugin", "list", "--available", "--json"])
+    else:
+        data = run_json(["claude", "plugin", "list", "--available", "--json"])
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    return [*data.get("installed", []), *data.get("available", [])]
+
+
+def plugin_is_installed(client: str, selector: str) -> bool:
+    for entry in plugin_entries(client):
+        identifier = entry.get("pluginId") if client == "codex" else entry.get("id")
+        installed = entry.get("installed", True)
+        enabled = entry.get("enabled", True)
+        if identifier == selector and installed and enabled:
+            return True
+    return False
+
+
+def install_marketplace_bundle(
+    bundle: dict[str, Any], clients: list[str], dry_run: bool, *, update: bool
+) -> None:
+    for client in clients_for(bundle, clients):
+        ensure_marketplace(bundle, client, dry_run)
+        if update and not dry_run:
+            entry = marketplace_entry(client, bundle["marketplace"])
+            actual = marketplace_repo(client, entry or {})
+            if actual:
+                command = (
+                    ["codex", "plugin", "marketplace", "upgrade", bundle["marketplace"], "--json"]
+                    if client == "codex"
+                    else ["claude", "plugin", "marketplace", "update", bundle["marketplace"]]
+                )
+                run(command)
+                refreshed = marketplace_entry(client, bundle["marketplace"])
+                if marketplace_repo(client, refreshed or {}) != normalize_repo(bundle["repository"]):
+                    raise UpstreamError(
+                        f"Marketplace source changed unexpectedly during update: {bundle['marketplace']} ({client})"
+                    )
+        for plugin in bundle["plugins"]:
+            if plugin == "build-macos-apps" and platform.system() != "Darwin":
+                print(f"= skip macOS-only upstream plugin on {platform.system()}: {plugin}")
+                continue
+            selector = f"{plugin}@{bundle['marketplace']}"
+            installed = False if dry_run else plugin_is_installed(client, selector)
+            if update and client == "codex":
+                run(["codex", "plugin", "add", selector, "--json"], dry_run=dry_run)
+            elif update and installed and client == "claude":
+                run(["claude", "plugin", "update", selector, "--scope", "user"], dry_run=dry_run)
+            elif not installed:
+                command = (
+                    ["codex", "plugin", "add", selector, "--json"]
+                    if client == "codex"
+                    else ["claude", "plugin", "install", selector, "--scope", "user"]
+                )
+                run(command, dry_run=dry_run)
+            else:
+                print(f"= upstream plugin already installed: {selector} ({client})")
+
+
+def doctor_marketplace_bundle(bundle: dict[str, Any], clients: list[str]) -> int:
+    failures = 0
+    for client in clients_for(bundle, clients):
+        try:
+            entry = marketplace_entry(client, bundle["marketplace"])
+        except UpstreamError as exc:
+            print(f"FAIL upstream marketplace {bundle['marketplace']} ({client}): {exc}")
+            failures += 1
+            continue
+        expected = normalize_repo(bundle["repository"])
+        actual = marketplace_repo(client, entry or {})
+        healthy_marketplace = entry is not None and actual == expected
+        print(
+            f"{'PASS' if healthy_marketplace else 'FAIL'} upstream marketplace: "
+            f"{bundle['marketplace']} ({client})"
+            + ("" if healthy_marketplace else f"; expected {expected}, found {actual or 'unknown'}")
+        )
+        failures += 0 if healthy_marketplace else 1
+        if not healthy_marketplace:
+            continue
+        for plugin in bundle["plugins"]:
+            if plugin == "build-macos-apps" and platform.system() != "Darwin":
+                continue
+            selector = f"{plugin}@{bundle['marketplace']}"
+            healthy = plugin_is_installed(client, selector)
+            print(f"{'PASS' if healthy else 'FAIL'} upstream plugin: {selector} ({client})")
+            failures += 0 if healthy else 1
+    return failures
+
+
+def git_checkout_matches(path: Path, repository: str) -> bool:
+    completed = subprocess.run(
+        ["git", "-C", str(path), "remote", "get-url", "origin"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    return completed.returncode == 0 and normalize_repo(completed.stdout.strip()) == normalize_repo(repository)
+
+
+def write_openai_adapter(bundle: dict[str, Any], adapter: Path) -> None:
+    plugins = []
+    for name in bundle["plugins"]:
+        if name == "build-macos-apps" and platform.system() != "Darwin":
+            continue
+        source = adapter / "upstream" / "plugins" / name
+        if not (source / ".codex-plugin" / "plugin.json").is_file():
+            raise UpstreamError(f"Official OpenAI source is missing the expected plugin: {name}")
+        plugins.append(
+            {
+                "name": name,
+                "source": {"source": "local", "path": f"./upstream/plugins/{name}"},
+                "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+                "category": "Developer Tools",
+            }
+        )
+    payload = {
+        "name": bundle["fallbackMarketplace"],
+        "interface": {"displayName": "OpenAI essentials via Agent Toolkit"},
+        "plugins": plugins,
+    }
+    manifest_dir = adapter / ".agents" / "plugins"
+    ensure_private_directory(manifest_dir)
+    target = manifest_dir / "marketplace.json"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+
+
+def ensure_openai_adapter(bundle: dict[str, Any], dry_run: bool, *, update: bool) -> str:
+    git = shutil.which("git")
+    if not git:
+        raise UpstreamError("The OpenAI essentials fallback adapter requires Git on PATH.")
+    name = bundle["fallbackMarketplace"]
+    adapter = STATE_DIR / "marketplaces" / name
+    upstream = adapter / "upstream"
+    repository = bundle["repository"]
+    ref = bundle.get("ref", "main")
+    if adapter.is_symlink() or upstream.is_symlink():
+        raise UpstreamError(f"Refusing symlinked OpenAI adapter state: {adapter}")
+    existing = marketplace_entry("codex", name)
+    if existing:
+        actual_root = existing.get("root") or existing.get("marketplaceSource", {}).get("source")
+        if not actual_root or Path(str(actual_root)).resolve() != adapter.resolve():
+            raise UpstreamError(f"Refusing conflicting {name} Codex marketplace")
+    if not upstream.exists():
+        if not dry_run:
+            ensure_private_directory(adapter)
+        run(
+            [git, "clone", "--depth", "1", "--branch", ref, f"https://github.com/{repository}.git", str(upstream)],
+            dry_run=dry_run,
+        )
+        if not dry_run and not git_checkout_matches(upstream, repository):
+            raise UpstreamError(f"Refusing unexpected Git source at {upstream}")
+    elif not git_checkout_matches(upstream, repository):
+        raise UpstreamError(f"Refusing unexpected Git source at {upstream}")
+    if not dry_run:
+        problem = checkout_problem(upstream, repository)
+        if problem:
+            raise UpstreamError(f"Refusing unverified OpenAI source checkout: {problem}")
+    if update and upstream.exists():
+        shallow = run(
+            [git, "-C", str(upstream), "rev-parse", "--is-shallow-repository"], capture=True
+        )
+        assert shallow is not None
+        fetch = [git, "-C", str(upstream), "fetch"]
+        if shallow.stdout.strip() == "true":
+            fetch.append("--unshallow")
+        fetch += ["origin", ref]
+        run(fetch, dry_run=dry_run)
+        run([git, "-C", str(upstream), "merge", "--ff-only", "FETCH_HEAD"], dry_run=dry_run)
+    if not dry_run:
+        problem = checkout_problem(upstream, repository, tracking_ref=ref)
+        if problem:
+            raise UpstreamError(f"OpenAI source checkout does not exactly match its tracked source: {problem}")
+    if dry_run:
+        print(f"+ generate local {name} adapter from the verified official checkout")
+    else:
+        write_openai_adapter(bundle, adapter)
+    if not existing:
+        run(["codex", "plugin", "marketplace", "add", str(adapter), "--json"], dry_run=dry_run)
+    return name
+
+
+def official_codex_marketplace_trusted(bundle: dict[str, Any], entry: dict[str, Any]) -> bool:
+    actual = marketplace_repo("codex", entry)
+    expected = normalize_repo(bundle["repository"])
+    if actual is not None:
+        return actual == expected
+    if not bundle.get("runtimeReserved"):
+        return False
+    available = {
+        item.get("pluginId")
+        for item in plugin_entries("codex")
+        if isinstance(item.get("pluginId"), str)
+    }
+    required = {
+        f"{name}@{bundle['marketplace']}"
+        for name in bundle["plugins"]
+        if name != "build-macos-apps" or platform.system() == "Darwin"
+    }
+    return required <= available
+
+
+def install_codex_official_bundle(
+    bundle: dict[str, Any], clients: list[str], dry_run: bool, *, update: bool
+) -> None:
+    if "codex" not in clients_for(bundle, clients):
+        return
+    official = marketplace_entry("codex", bundle["marketplace"])
+    if official:
+        if not official_codex_marketplace_trusted(bundle, official):
+            raise UpstreamError(
+                f"Refusing unverifiable reserved {bundle['marketplace']} marketplace; expected official OpenAI package identities"
+            )
+        name = bundle["marketplace"]
+        print(f"= use Codex-provided official marketplace: {name}")
+    else:
+        name = ensure_openai_adapter(bundle, dry_run, update=update)
+        print(f"= Codex official marketplace is runtime-managed; use verified local adapter: {name}")
+    for plugin in bundle["plugins"]:
+        if plugin == "build-macos-apps" and platform.system() != "Darwin":
+            print(f"= skip macOS-only upstream plugin on {platform.system()}: {plugin}")
+            continue
+        selector = f"{plugin}@{name}"
+        installed = False if dry_run else plugin_is_installed("codex", selector)
+        if update or not installed:
+            run(["codex", "plugin", "add", selector, "--json"], dry_run=dry_run)
+        else:
+            print(f"= upstream plugin already installed: {selector} (codex)")
+
+
+def doctor_codex_official_bundle(bundle: dict[str, Any], clients: list[str]) -> int:
+    if "codex" not in clients_for(bundle, clients):
+        return 0
+    official = marketplace_entry("codex", bundle["marketplace"])
+    if official and not official_codex_marketplace_trusted(bundle, official):
+        print("FAIL upstream OpenAI essentials marketplace: reserved catalog identity is not verifiable")
+        return 1
+    name = bundle["marketplace"] if official else bundle["fallbackMarketplace"]
+    fallback = marketplace_entry("codex", name) if not official else official
+    if not fallback:
+        print("FAIL upstream OpenAI essentials marketplace: no official runtime catalog or verified adapter")
+        return 1
+    failures = 0
+    if not official:
+        adapter = STATE_DIR / "marketplaces" / bundle["fallbackMarketplace"]
+        actual_root = fallback.get("root") or fallback.get("marketplaceSource", {}).get("source")
+        checkout = adapter / "upstream"
+        problem = checkout_problem(checkout, bundle["repository"], tracking_ref=bundle.get("ref", "main"))
+        if not actual_root or Path(str(actual_root)).resolve() != adapter.resolve() or problem:
+            print(
+                "FAIL upstream OpenAI essentials marketplace: fallback adapter root or checkout is not exact"
+                + (f" ({problem})" if problem else "")
+            )
+            return 1
+    print(f"PASS upstream OpenAI essentials marketplace: {name} (codex)")
+    for plugin in bundle["plugins"]:
+        if plugin == "build-macos-apps" and platform.system() != "Darwin":
+            continue
+        selector = f"{plugin}@{name}"
+        healthy = plugin_is_installed("codex", selector)
+        print(f"{'PASS' if healthy else 'FAIL'} upstream plugin: {selector} (codex)")
+        failures += 0 if healthy else 1
+    return failures
+
+
+def platform_key() -> str:
+    systems = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}
+    machines = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "AMD64": "x86_64"}
+    system = systems.get(platform.system())
+    machine = machines.get(platform.machine())
+    if not system or not machine:
+        raise UpstreamError(f"Obscura has no allowlisted build for {platform.system()} {platform.machine()}")
+    return f"{system}-{machine}"
+
+
+def safe_extract_tar(archive: Path, destination: Path) -> None:
+    with tarfile.open(archive) as handle:
+        for member in handle.getmembers():
+            target = (destination / member.name).resolve()
+            if (
+                destination.resolve() not in (target, *target.parents)
+                or member.issym()
+                or member.islnk()
+                or not (member.isfile() or member.isdir())
+            ):
+                raise UpstreamError(f"Unsafe path in Obscura archive: {member.name}")
+        handle.extractall(destination)
+
+
+def safe_extract_zip(archive: Path, destination: Path) -> None:
+    with zipfile.ZipFile(archive) as handle:
+        for member in handle.infolist():
+            target = (destination / member.filename).resolve()
+            mode = member.external_attr >> 16
+            if destination.resolve() not in (target, *target.parents) or stat.S_ISLNK(mode):
+                raise UpstreamError(f"Unsafe path in Obscura archive: {member.filename}")
+        handle.extractall(destination)
+
+
+def obscura_expected_binary(bundle: dict[str, Any]) -> Path:
+    version = bundle["version"]
+    destination = STATE_DIR / "tools" / "obscura" / version
+    return destination / ("obscura.exe" if os.name == "nt" else "obscura")
+
+
+def obscura_expected_worker(bundle: dict[str, Any]) -> Path:
+    executable = obscura_expected_binary(bundle)
+    return executable.parent / ("obscura-worker.exe" if os.name == "nt" else "obscura-worker")
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verify_obscura_payload(bundle: dict[str, Any], asset: dict[str, Any]) -> tuple[Path, Path]:
+    executable = obscura_expected_binary(bundle)
+    worker = obscura_expected_worker(bundle)
+    if executable.is_symlink() or worker.is_symlink():
+        raise UpstreamError("Refusing symlinked Obscura managed payload")
+    if not executable.is_file() or not worker.is_file():
+        raise UpstreamError(f"Obscura payload is incomplete at the managed path: {executable.parent}")
+    observed_binary = file_sha256(executable)
+    observed_worker = file_sha256(worker)
+    if observed_binary != asset["binarySha256"] or observed_worker != asset["workerSha256"]:
+        raise UpstreamError("Obscura managed executable checksum does not match the allowlist")
+    return executable, worker
+
+
+def obscura_binary(bundle: dict[str, Any], dry_run: bool) -> Path:
+    version = bundle["version"]
+    key = platform_key()
+    asset = bundle["assets"].get(key)
+    if not asset:
+        raise UpstreamError(f"Obscura has no allowlisted asset for {key}")
+    executable = obscura_expected_binary(bundle)
+    worker = obscura_expected_worker(bundle)
+    destination = executable.parent
+    if executable.is_file():
+        verify_obscura_payload(bundle, asset)
+        return executable
+    print(f"+ download verified Obscura {version} for {key}")
+    if dry_run:
+        return executable
+    ensure_private_directory(destination)
+    url = f"https://github.com/{bundle['repository']}/releases/download/v{version}/{asset['name']}"
+    with tempfile.TemporaryDirectory(prefix="agent-toolkit-obscura-") as temporary:
+        root = Path(temporary)
+        archive = root / asset["name"]
+        urllib.request.urlretrieve(url, archive)
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if digest != asset["sha256"]:
+            raise UpstreamError(f"Obscura checksum mismatch: expected {asset['sha256']}, found {digest}")
+        extracted = root / "extracted"
+        extracted.mkdir()
+        if archive.suffix == ".zip":
+            safe_extract_zip(archive, extracted)
+        else:
+            safe_extract_tar(archive, extracted)
+        name = "obscura.exe" if os.name == "nt" else "obscura"
+        worker_name = "obscura-worker.exe" if os.name == "nt" else "obscura-worker"
+        candidates = list(extracted.rglob(name))
+        worker_candidates = list(extracted.rglob(worker_name))
+        if len(candidates) != 1 or len(worker_candidates) != 1:
+            raise UpstreamError(f"Expected one {name} and one {worker_name} in the verified Obscura archive")
+        if file_sha256(candidates[0]) != asset["binarySha256"]:
+            raise UpstreamError("Obscura executable checksum mismatch after extraction")
+        if file_sha256(worker_candidates[0]) != asset["workerSha256"]:
+            raise UpstreamError("Obscura worker checksum mismatch after extraction")
+        shutil.copy2(candidates[0], executable)
+        shutil.copy2(worker_candidates[0], worker)
+        if os.name != "nt":
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            worker.chmod(worker.stat().st_mode | stat.S_IXUSR)
+    verify_obscura_payload(bundle, asset)
+    return executable
+
+
+def mcp_registration(client: str) -> subprocess.CompletedProcess[str]:
+    command = ["codex", "mcp", "get", "obscura", "--json"] if client == "codex" else [
+        "claude",
+        "mcp",
+        "get",
+        "obscura",
+    ]
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+    return completed
+
+
+def mcp_registration_spec(client: str) -> tuple[str, list[str]] | None:
+    completed = mcp_registration(client)
+    text = (completed.stdout + completed.stderr).strip()
+    if completed.returncode != 0:
+        lowered = text.lower()
+        if any(marker in lowered for marker in ("not found", "does not exist", "no mcp server")):
+            return None
+        raise UpstreamError(f"Unable to inspect existing Obscura MCP registration for {client}: {text or 'unknown error'}")
+    if client == "codex":
+        try:
+            data = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise UpstreamError("Codex returned invalid JSON for the Obscura MCP registration") from exc
+        transport = data.get("transport", {}) if isinstance(data, dict) else {}
+        command = transport.get("command")
+        arguments = transport.get("args")
+        if not isinstance(command, str) or not isinstance(arguments, list) or not all(
+            isinstance(item, str) for item in arguments
+        ):
+            raise UpstreamError("Codex Obscura MCP registration has an unsupported shape")
+        return command, arguments
+    command_match = re.search(r"^\s*Command:\s*(.+?)\s*$", completed.stdout, re.MULTILINE)
+    args_match = re.search(r"^\s*Args:\s*(.*?)\s*$", completed.stdout, re.MULTILINE)
+    if not command_match or not args_match:
+        raise UpstreamError("Claude Obscura MCP registration has an unsupported shape")
+    return command_match.group(1), args_match.group(1).split()
+
+
+def mcp_spec_matches(spec: tuple[str, list[str]], executable: Path) -> bool:
+    command, arguments = spec
+    return Path(command).expanduser().resolve() == executable.resolve() and arguments == ["mcp"]
+
+
+def install_obscura(bundle: dict[str, Any], clients: list[str], dry_run: bool, *, update: bool) -> None:
+    executable = obscura_binary(bundle, dry_run)
+    managed_root = (STATE_DIR / "tools" / "obscura").resolve()
+    for client in clients_for(bundle, clients):
+        existing = None if dry_run else mcp_registration_spec(client)
+        if existing:
+            if mcp_spec_matches(existing, executable):
+                print(f"= verified existing Obscura MCP registration ({client})")
+                continue
+            command_path = Path(existing[0]).expanduser().resolve()
+            managed = managed_root in (command_path, *command_path.parents) and existing[1] == ["mcp"]
+            if update and managed:
+                remove = ["codex", "mcp", "remove", "obscura"] if client == "codex" else [
+                    "claude",
+                    "mcp",
+                    "remove",
+                    "obscura",
+                    "--scope",
+                    "user",
+                ]
+                run(remove)
+            else:
+                raise UpstreamError(
+                    f"Refusing conflicting Obscura MCP registration for {client}: {existing[0]} {' '.join(existing[1])}"
+                )
+        command = ["codex", "mcp", "add", "obscura", "--", str(executable), "mcp"] if client == "codex" else [
+            "claude",
+            "mcp",
+            "add",
+            "obscura",
+            "--scope",
+            "user",
+            "--",
+            str(executable),
+            "mcp",
+        ]
+        run(command, dry_run=dry_run)
+
+
+def doctor_obscura(bundle: dict[str, Any], clients: list[str]) -> int:
+    failures = 0
+    try:
+        executable = obscura_expected_binary(bundle)
+        asset = bundle.get("assets", {}).get(platform_key())
+        if not asset:
+            raise UpstreamError("Obscura has no allowlisted asset for this platform")
+        verify_obscura_payload(bundle, asset)
+        version = run([str(executable), "--version"], capture=True)
+        assert version is not None
+        observed = (version.stdout or version.stderr).strip()
+        if bundle["version"] not in observed:
+            raise UpstreamError(f"expected version {bundle['version']}, found {observed or 'unknown'}")
+        print(f"PASS upstream Obscura: {observed}; executable and worker checksums verified")
+    except UpstreamError as exc:
+        print(f"FAIL upstream Obscura: {exc}")
+        return 1
+    for client in clients_for(bundle, clients):
+        try:
+            spec = mcp_registration_spec(client)
+            healthy = spec is not None and mcp_spec_matches(spec, executable)
+        except UpstreamError:
+            healthy = False
+        print(f"{'PASS' if healthy else 'FAIL'} upstream Obscura MCP: {client}")
+        failures += 0 if healthy else 1
+    return failures
+
+
+def process_bundle(
+    name: str,
+    bundle: dict[str, Any],
+    command: str,
+    clients: list[str],
+    dry_run: bool,
+) -> int:
+    print(f"\n== {bundle['displayName']} ==")
+    if command == "doctor":
+        if bundle["kind"] == "graphify":
+            return doctor_graphify(bundle, clients)
+        if bundle["kind"] == "skills-package":
+            return doctor_skills_package(bundle, clients)
+        if bundle["kind"] == "marketplace":
+            return doctor_marketplace_bundle(bundle, clients)
+        if bundle["kind"] == "codex-official":
+            return doctor_codex_official_bundle(bundle, clients)
+        if bundle["kind"] == "obscura":
+            return doctor_obscura(bundle, clients)
+    update = command == "update"
+    if bundle["kind"] == "graphify":
+        install_graphify(bundle, clients, dry_run)
+    elif bundle["kind"] == "skills-package":
+        install_skills_package(bundle, clients, dry_run)
+    elif bundle["kind"] == "marketplace":
+        install_marketplace_bundle(bundle, clients, dry_run, update=update)
+    elif bundle["kind"] == "codex-official":
+        install_codex_official_bundle(bundle, clients, dry_run, update=update)
+    elif bundle["kind"] == "obscura":
+        install_obscura(bundle, clients, dry_run, update=update)
+    else:
+        raise UpstreamError(f"Unsupported upstream kind for {name}: {bundle.get('kind')}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="agent-upstreams", description=__doc__)
+    parser.add_argument("command", choices=("install", "update", "doctor"))
+    parser.add_argument("--profile", choices=("recommended", "skills-only", "full"), required=True)
+    parser.add_argument("--clients", required=True, help="comma-separated codex,claude list")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def main() -> int:
+    try:
+        args = build_parser().parse_args()
+        clients = selected_clients(args.clients)
+        names = profile_bundles(args.profile)
+        catalog = catalog_bundles()
+        unknown = [name for name in names if name not in catalog]
+        if unknown:
+            raise UpstreamError("Profile references unknown upstream bundles: " + ", ".join(unknown))
+        failures = sum(
+            process_bundle(name, catalog[name], args.command, clients, args.dry_run) for name in names
+        )
+        if failures:
+            raise UpstreamError(f"Upstream doctor found {failures} missing or disabled component(s)")
+        if args.command != "doctor" and not args.dry_run:
+            save_receipt(args.profile, clients, names)
+        if args.command == "doctor":
+            print("\nUpstream doctor passed.")
+        else:
+            print("\nUpstream setup complete. Provider authentication remains per user and happens on use.")
+        return 0
+    except UpstreamError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

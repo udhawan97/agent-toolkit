@@ -1,0 +1,3 @@
+# Review these settings before merging them into ~/.codex/config.toml.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Toolkit architecture</title>
+  <desc id="desc">One canonical toolkit routes owned skills, an allowlisted upstream catalog, and sanitized guidance through native Codex and Claude Code installation paths.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0a1626"/><stop offset="1" stop-color="#050a12"/></linearGradient>
+    <linearGradient id="hub" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#203652"/><stop offset="1" stop-color="#101c2c"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity=".35"/></filter>
+    <marker id="arrowC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#36d7ff"/></marker>
+    <marker id="arrowV" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#9c6cff"/></marker>
+  </defs>
+  <rect width="1200" height="560" rx="30" fill="url(#bg)"/>
+  <text x="60" y="62" fill="#91a5bd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" letter-spacing="3">ONE LAUNCHER · TRUSTED SOURCES · TWO CLIENTS</text>
+  <g filter="url(#shadow)">
+    <rect x="385" y="92" width="430" height="162" rx="24" fill="url(#hub)" stroke="#f5c36a" stroke-width="2"/>
+    <circle cx="438" cy="145" r="24" fill="#f5c36a"/>
+    <path d="M438 131L452 139V155L438 163L424 155V139Z" fill="#6d4312"/>
+    <text x="480" y="143" fill="#f7f9fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="700">agent-toolkit</text>
+    <text x="480" y="177" fill="#adc0d6" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18">Owned workflows + upstream allowlist</text>
+    <rect x="408" y="204" width="116" height="28" rx="14" fill="#17263a"/><text x="466" y="224" text-anchor="middle" fill="#dce8f5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">plugins/</text>
+    <rect x="536" y="204" width="128" height="28" rx="14" fill="#17263a"/><text x="600" y="224" text-anchor="middle" fill="#dce8f5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">catalog/</text>
+    <rect x="676" y="204" width="106" height="28" rx="14" fill="#17263a"/><text x="729" y="224" text-anchor="middle" fill="#dce8f5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">templates/</text>
+  </g>
+  <path d="M516 255C490 303 386 308 315 336" fill="none" stroke="#36d7ff" stroke-width="4" marker-end="url(#arrowC)"/>
+  <path d="M684 255C710 303 814 308 885 336" fill="none" stroke="#9c6cff" stroke-width="4" marker-end="url(#arrowV)"/>
+  <g filter="url(#shadow)">
+    <rect x="70" y="330" width="440" height="160" rx="24" fill="#0d1b2c" stroke="#36d7ff" stroke-width="2"/>
+    <text x="106" y="381" fill="#f7f9fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="700">Codex</text>
+    <text x="106" y="416" fill="#9fb5cc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">Owned plugin + OpenAI/partner sources</text>
+    <rect x="106" y="444" width="286" height="28" rx="14" fill="#102942"/><text x="249" y="464" text-anchor="middle" fill="#79e5ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">native cache · skills · MCP</text>
+    <circle cx="458" cy="376" r="22" fill="#112d48" stroke="#36d7ff"/><path d="M448 376H468M458 366V386" stroke="#79e5ff" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="690" y="330" width="440" height="160" rx="24" fill="#151329" stroke="#9c6cff" stroke-width="2"/>
+    <text x="726" y="381" fill="#f7f9fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="700">Claude Code</text>
+    <text x="726" y="416" fill="#b6add3" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">Owned plugin + Anthropic/partner sources</text>
+    <rect x="726" y="444" width="286" height="28" rx="14" fill="#26204a"/><text x="869" y="464" text-anchor="middle" fill="#c3acff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">native cache · skills · MCP</text>
+    <circle cx="1078" cy="376" r="22" fill="#292050" stroke="#9c6cff"/><path d="M1068 376H1088M1078 366V386" stroke="#d3c4ff" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <text x="600" y="530" text-anchor="middle" fill="#8295aa" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Public-safe owned layer · allowlisted upstreams · credentials stay with each user</text>
+</svg>

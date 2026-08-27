@@ -1,0 +1,53 @@
+name: Plugin or workflow proposal
+description: Propose a concrete addition to the public cross-client catalog.
+title: "[Proposal]: "
+labels: ["proposal"]
+body:
+  - type: textarea
+    id: job
+    attributes:
+      label: User job
+      description: What is someone trying to accomplish, and where does the current workflow stop helping?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Proposed outcome
+      description: Describe the smallest useful behavior, not a broad technology wish list.
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: Likely package type
+      options:
+        - Portable skill
+        - Client adapter
+        - MCP server or connector
+        - Guidance template
+        - Setup or maintenance improvement
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: clients
+    attributes:
+      label: Cross-client behavior
+      description: Explain how Codex and Claude Code users should experience the same canonical workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: trust
+    attributes:
+      label: Trust, authentication, and side effects
+      description: Note credentials, network calls, writes, external services, licenses, or distribution constraints.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Public boundary
+      options:
+        - label: This proposal contains no credentials, private evidence, personal configuration, or proprietary package content.
+          required: true

@@ -1,0 +1,1090 @@
+#!/usr/bin/env python3
+"""Install and maintain the Agent Toolkit through native client marketplaces."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+MARKETPLACE = "agent-toolkit"
+DEFAULT_REPO = "udhawan97/agent-toolkit"
+STATE_DIR = Path.home() / ".agent-toolkit"
+STATE_FILE = STATE_DIR / "state.json"
+BEGIN_MARKER = "<!-- BEGIN agent-toolkit:guidance -->"
+END_MARKER = "<!-- END agent-toolkit:guidance -->"
+STANDARD_SKILL_KEYS = {
+    "name",
+    "description",
+    "license",
+    "compatibility",
+    "metadata",
+    "allowed-tools",
+}
+
+
+class ToolkitError(RuntimeError):
+    pass
+
+
+def load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ToolkitError(f"Cannot read valid JSON from {path}: {exc}") from exc
+
+
+def load_state() -> dict[str, Any] | None:
+    reject_symlink_destination(STATE_FILE)
+    if STATE_FILE.is_symlink():
+        raise ToolkitError(f"Refusing to read an installation receipt through a symlink: {STATE_FILE}")
+    if not STATE_FILE.is_file():
+        return None
+    state = load_json(STATE_FILE)
+    if not isinstance(state, dict) or state.get("schemaVersion") != 2 or not isinstance(state.get("clients"), dict):
+        raise ToolkitError(f"Unsupported or invalid installation receipt: {STATE_FILE}")
+    for client, entry in state["clients"].items():
+        plugins = entry.get("plugins") if isinstance(entry, dict) else None
+        ownership = entry.get("pluginOwnership") if isinstance(entry, dict) else None
+        if isinstance(entry, dict):
+            entry.setdefault("upstreamsEnabled", True)
+            entry.setdefault("guidanceEnabled", bool(state.get("guidance")))
+        if (
+            client not in {"codex", "claude"}
+            or not isinstance(plugins, list)
+            or not isinstance(ownership, dict)
+            or set(ownership) != set(plugins)
+            or any(value not in {"created", "adopted"} for value in ownership.values())
+            or not isinstance(entry.get("upstreamsEnabled"), bool)
+            or not isinstance(entry.get("guidanceEnabled"), bool)
+            or entry.get("status", "active") not in {"active", "installing"}
+            or (
+                entry.get("status") == "installing"
+                and (
+                    not isinstance(entry.get("plannedPlugins"), list)
+                    or not all(isinstance(plugin, str) for plugin in entry["plannedPlugins"])
+                )
+            )
+        ):
+            raise ToolkitError(f"Invalid plugin ownership in receipt for {client}")
+    return state
+
+
+def reject_symlink_destination(path: Path) -> None:
+    configured_roots = {
+        Path.home(),
+        STATE_DIR,
+        Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")),
+        Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")),
+    }
+    boundaries = [root for root in configured_roots if root == path or root in path.parents]
+    boundary = max(boundaries, key=lambda item: len(item.parts)) if boundaries else path.parent
+    for candidate in (path, *path.parents):
+        if candidate.is_symlink():
+            raise ToolkitError(f"Refusing to access toolkit state through a symlink: {candidate}")
+        if candidate == boundary:
+            break
+
+
+def ensure_private_directory(path: Path) -> None:
+    reject_symlink_destination(path)
+    if path.exists() and not path.is_dir():
+        raise ToolkitError(f"Expected a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+
+
+def run(
+    command: list[str],
+    *,
+    dry_run: bool = False,
+    capture: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    print("+ " + " ".join(command))
+    if dry_run:
+        return None
+    completed = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        capture_output=capture,
+        env=env,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise ToolkitError(f"Command failed ({completed.returncode}): {' '.join(command)}\n{detail}")
+    return completed
+
+
+def run_json(command: list[str]) -> Any:
+    completed = run(command, capture=True)
+    assert completed is not None
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ToolkitError(f"Command did not return JSON: {' '.join(command)}") from exc
+
+
+def detected_clients() -> list[str]:
+    return [name for name in ("codex", "claude") if shutil.which(name)]
+
+
+def choose_clients(requested: str) -> list[str]:
+    detected = detected_clients()
+    if requested == "auto":
+        if not detected:
+            raise ToolkitError("Neither Codex nor Claude Code is available on PATH.")
+        return detected
+    wanted = [requested] if requested in {"codex", "claude"} else ["codex", "claude"]
+    missing = [name for name in wanted if name not in detected]
+    if missing:
+        raise ToolkitError("Requested client is not available on PATH: " + ", ".join(missing))
+    return wanted
+
+
+def profile_data(name: str) -> dict[str, Any]:
+    profile_path = ROOT / "profiles" / f"{name}.json"
+    profile = load_json(profile_path)
+    if not isinstance(profile, dict):
+        raise ToolkitError(f"Profile is not a JSON object: {profile_path}")
+    return profile
+
+
+def profile_plugins(name: str) -> list[str]:
+    profile_path = ROOT / "profiles" / f"{name}.json"
+    profile = profile_data(name)
+    plugins = profile.get("plugins") if isinstance(profile, dict) else None
+    if not isinstance(plugins, list) or not all(isinstance(item, str) for item in plugins):
+        raise ToolkitError(f"Profile has an invalid plugins list: {profile_path}")
+    return plugins
+
+
+def profile_guidance(name: str) -> bool:
+    value = profile_data(name).get("guidance", False)
+    if not isinstance(value, bool):
+        raise ToolkitError(f"Profile has an invalid guidance value: {name}")
+    return value
+
+
+def run_upstreams(
+    command: str,
+    clients: list[str],
+    profile: str,
+    *,
+    dry_run: bool = False,
+) -> None:
+    script = ROOT / "bin" / "agent-upstreams"
+    if not script.is_file():
+        raise ToolkitError("bin/agent-upstreams is missing")
+    invocation = [
+        sys.executable,
+        str(script),
+        command,
+        "--profile",
+        profile,
+        "--clients",
+        ",".join(clients),
+    ]
+    if dry_run:
+        invocation.append("--dry-run")
+    run(invocation)
+
+
+def github_origin() -> str | None:
+    completed = subprocess.run(
+        ["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip().rstrip("/")
+    match = re.search(r"github\.com[/:]([^/]+/[^/]+)$", value)
+    return match.group(1).removesuffix(".git") if match else None
+
+
+def marketplace_source(mode: str, repo: str, channel: str) -> tuple[str, str, bool]:
+    selected = mode
+    origin = github_origin()
+    if mode == "auto":
+        selected = "github" if origin else "local"
+    if selected == "local":
+        return str(ROOT), str(ROOT), True
+    github_repo = origin or repo
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", github_repo):
+        raise ToolkitError(f"Invalid GitHub owner/repository value: {github_repo}")
+    return github_repo, f"{github_repo}@{channel}", False
+
+
+def source_spec(codex_source: str, channel: str, local: bool) -> dict[str, Any]:
+    return {
+        "kind": "local" if local else "github",
+        "path": str(ROOT.resolve()) if local else None,
+        "repo": None if local else codex_source,
+        "channel": None if local else channel,
+    }
+
+
+def codex_marketplaces() -> list[dict[str, Any]]:
+    result = run_json(["codex", "plugin", "marketplace", "list", "--json"])
+    return result.get("marketplaces", []) if isinstance(result, dict) else []
+
+
+def codex_plugins() -> list[dict[str, Any]]:
+    result = run_json(["codex", "plugin", "list", "--available", "--json"])
+    if not isinstance(result, dict):
+        return []
+    return [*result.get("installed", []), *result.get("available", [])]
+
+
+def claude_marketplaces() -> list[dict[str, Any]]:
+    result = run_json(["claude", "plugin", "marketplace", "list", "--json"])
+    return result if isinstance(result, list) else []
+
+
+def claude_plugins() -> list[dict[str, Any]]:
+    result = run_json(["claude", "plugin", "list", "--available", "--json"])
+    if isinstance(result, list):
+        return result
+    if not isinstance(result, dict):
+        return []
+    return [*result.get("installed", []), *result.get("available", [])]
+
+
+def marketplace_entry(client: str) -> dict[str, Any] | None:
+    entries = codex_marketplaces() if client == "codex" else claude_marketplaces()
+    return next((entry for entry in entries if entry.get("name") == MARKETPLACE), None)
+
+
+def github_repo_name(value: str) -> str | None:
+    candidate = value.strip().rstrip("/")
+    owner_repo = r"(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)"
+    patterns = (
+        rf"{owner_repo}(?:\.git)?",
+        rf"https://github\.com/{owner_repo}(?:\.git)?",
+        rf"git@github\.com:{owner_repo}(?:\.git)?",
+        rf"ssh://git@github\.com/{owner_repo}(?:\.git)?",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, candidate, re.IGNORECASE)
+        if match:
+            return f"{match.group('owner')}/{match.group('repo')}".lower()
+    return None
+
+
+def checkout_ref(root: str) -> str | None:
+    if not root or not (Path(root) / ".git").exists():
+        return None
+    completed = subprocess.run(
+        ["git", "-C", root, "branch", "--show-current"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    value = completed.stdout.strip()
+    return value or None
+
+
+def marketplace_matches(client: str, entry: dict[str, Any], expected: dict[str, Any]) -> tuple[bool, str]:
+    if expected.get("kind") == "local":
+        if client == "codex":
+            actual = entry.get("marketplaceSource", {}).get("source") or entry.get("root")
+        else:
+            actual = entry.get("path") or entry.get("repo") or entry.get("installLocation")
+        if not actual:
+            return False, "registered marketplace has no inspectable local source"
+        matches = Path(str(actual)).resolve() == Path(str(expected.get("path"))).resolve()
+        return matches, f"expected {expected.get('path')}, found {actual}"
+
+    expected_repo = github_repo_name(str(expected.get("repo", "")))
+    if client == "codex":
+        actual_source = entry.get("marketplaceSource", {}).get("source", "")
+        root = entry.get("root", "")
+        declared_ref = entry.get("marketplaceSource", {}).get("ref")
+    else:
+        actual_source = entry.get("repo", "")
+        root = entry.get("installLocation", "")
+        declared_ref = entry.get("ref")
+    actual_repo = github_repo_name(str(actual_source))
+    if not expected_repo or actual_repo != expected_repo:
+        return False, f"expected GitHub source {expected_repo}, found {actual_source or 'unknown'}"
+    expected_ref = str(expected.get("channel", ""))
+    actual_ref = str(declared_ref or checkout_ref(str(root)) or "")
+    if actual_ref != expected_ref:
+        return False, f"expected ref {expected_ref}, found {actual_ref or 'unverifiable'}"
+    return True, f"{expected_repo}@{expected_ref}"
+
+
+def require_matching_marketplace(client: str, expected: dict[str, Any]) -> dict[str, Any]:
+    entry = marketplace_entry(client)
+    if not entry:
+        raise ToolkitError(f"{MARKETPLACE} is not registered for {client}; run install first")
+    matches, detail = marketplace_matches(client, entry, expected)
+    if not matches:
+        raise ToolkitError(
+            f"Refusing to trust the existing {MARKETPLACE} marketplace for {client}: {detail}. "
+            "Remove or rename the conflicting marketplace, then run install again."
+        )
+    return entry
+
+
+def marketplace_is_registered(client: str) -> bool:
+    return marketplace_entry(client) is not None
+
+
+def plugin_is_installed(client: str, plugin: str) -> bool:
+    target = f"{plugin}@{MARKETPLACE}"
+    entries = codex_plugins() if client == "codex" else claude_plugins()
+    for entry in entries:
+        identifier = entry.get("pluginId") if client == "codex" else entry.get("id")
+        installed = entry.get("installed", True)
+        enabled = entry.get("enabled", True)
+        if identifier == target and installed and enabled:
+            return True
+    return False
+
+
+def register_marketplace(
+    client: str,
+    codex_source: str,
+    claude_source: str,
+    channel: str,
+    local: bool,
+    dry_run: bool,
+) -> bool:
+    expected = source_spec(codex_source, channel, local)
+    existing = marketplace_entry(client)
+    if existing:
+        matches, detail = marketplace_matches(client, existing, expected)
+        if not matches:
+            raise ToolkitError(
+                f"Refusing to reuse the existing {MARKETPLACE} marketplace for {client}: {detail}. "
+                "Remove or rename the conflicting marketplace, then retry."
+            )
+        print(f"= {MARKETPLACE} marketplace already registered for {client}")
+        return False
+    if client == "codex":
+        command = ["codex", "plugin", "marketplace", "add", codex_source]
+        if not local:
+            command += ["--ref", channel]
+        command += ["--json"]
+    else:
+        command = ["claude", "plugin", "marketplace", "add", claude_source, "--scope", "user"]
+    run(command, dry_run=dry_run)
+    if not dry_run:
+        require_matching_marketplace(client, expected)
+    return True
+
+
+def install_plugin(client: str, plugin: str, dry_run: bool) -> None:
+    if not dry_run and plugin_is_installed(client, plugin):
+        print(f"= {plugin}@{MARKETPLACE} already installed for {client}")
+        return
+    selector = f"{plugin}@{MARKETPLACE}"
+    command = (
+        ["codex", "plugin", "add", selector, "--json"]
+        if client == "codex"
+        else ["claude", "plugin", "install", selector, "--scope", "user"]
+    )
+    run(command, dry_run=dry_run)
+
+
+def managed_guidance(template: Path) -> str:
+    body = template.read_text(encoding="utf-8").strip()
+    return f"{BEGIN_MARKER}\n{body}\n{END_MARKER}"
+
+
+def backup_path(target: Path, client: str) -> Path:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return STATE_DIR / "backups" / f"{stamp}-{uuid.uuid4().hex[:8]}" / f"{client}-{target.name}"
+
+
+def atomic_write(target: Path, content: str, mode: int | None = None) -> None:
+    reject_symlink_destination(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    previous_mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else mode or 0o600
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(content)
+        os.chmod(temp_path, previous_mode)
+        os.replace(temp_path, target)
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink()
+
+
+def merge_guidance(client: str, dry_run: bool) -> dict[str, str] | None:
+    if client == "codex":
+        target = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "AGENTS.md"
+        template = ROOT / "templates" / "codex" / "AGENTS.md"
+    else:
+        target = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "CLAUDE.md"
+        template = ROOT / "templates" / "claude" / "CLAUDE.md"
+    block = managed_guidance(template)
+    current = target.read_text(encoding="utf-8") if target.exists() else ""
+    pattern = re.compile(re.escape(BEGIN_MARKER) + r".*?" + re.escape(END_MARKER), re.DOTALL)
+    updated = pattern.sub(block, current) if pattern.search(current) else current.rstrip() + ("\n\n" if current.strip() else "") + block
+    updated = updated.rstrip() + "\n"
+    if updated == current:
+        print(f"= managed guidance already current: {target}")
+        return None
+    print(f"+ merge managed guidance into {target}")
+    if dry_run:
+        return None
+    existed = target.exists()
+    backup = backup_path(target, client)
+    if existed:
+        ensure_private_directory(STATE_DIR)
+        ensure_private_directory(STATE_DIR / "backups")
+        ensure_private_directory(backup.parent)
+        shutil.copyfile(target, backup)
+        os.chmod(backup, 0o600)
+    atomic_write(target, updated)
+    return {"target": str(target), "backup": str(backup) if existed else ""}
+
+
+def remove_guidance(client: str, dry_run: bool) -> None:
+    if client == "codex":
+        target = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "AGENTS.md"
+    else:
+        target = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "CLAUDE.md"
+    if not target.exists():
+        return
+    current = target.read_text(encoding="utf-8")
+    pattern = re.compile(r"\n?" + re.escape(BEGIN_MARKER) + r".*?" + re.escape(END_MARKER) + r"\n?", re.DOTALL)
+    if not pattern.search(current):
+        return
+    print(f"+ remove managed guidance from {target}")
+    if not dry_run:
+        updated = pattern.sub("\n", current).strip()
+        atomic_write(target, updated + ("\n" if updated else ""))
+
+
+def save_state(payload: dict[str, Any]) -> None:
+    ensure_private_directory(STATE_DIR)
+    atomic_write(STATE_FILE, json.dumps(payload, indent=2, sort_keys=True) + "\n", mode=0o600)
+    os.chmod(STATE_FILE, 0o600)
+
+
+def validate_frontmatter(skill: Path, errors: list[str]) -> None:
+    text = skill.read_text(encoding="utf-8")
+    match = re.match(r"^---\n(.*?)\n---(?:\n|$)", text, re.DOTALL)
+    if not match:
+        errors.append(f"missing YAML frontmatter: {skill.relative_to(ROOT)}")
+        return
+    keys = set()
+    for line in match.group(1).splitlines():
+        if not line or line.startswith((" ", "\t", "#")):
+            continue
+        if ":" in line:
+            keys.add(line.split(":", 1)[0])
+    missing = {"name", "description"} - keys
+    unexpected = keys - STANDARD_SKILL_KEYS
+    if missing:
+        errors.append(f"missing frontmatter keys in {skill.relative_to(ROOT)}: {sorted(missing)}")
+    if unexpected:
+        errors.append(f"non-portable frontmatter in {skill.relative_to(ROOT)}: {sorted(unexpected)}")
+    for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
+        if target.startswith(("http://", "https://", "#", "mailto:")):
+            continue
+        destination = (skill.parent / target.split("#", 1)[0]).resolve()
+        try:
+            destination.relative_to(ROOT.resolve())
+        except ValueError:
+            errors.append(f"relative link escapes repository in {skill.relative_to(ROOT)}: {target}")
+            continue
+        if not destination.exists():
+            errors.append(f"broken relative link in {skill.relative_to(ROOT)}: {target}")
+
+
+def validate_public_surface(errors: list[str]) -> None:
+    markdown_files = [ROOT / "README.md", *(ROOT / "docs").glob("*.md")]
+    for document in markdown_files:
+        text = document.read_text(encoding="utf-8")
+        targets = re.findall(r"!?\[[^\]]*\]\(([^)]+)\)", text)
+        targets += re.findall(r"(?:src|href)=\"([^\"]+)\"", text)
+        for target in targets:
+            clean = target.strip("<>").split("#", 1)[0]
+            if not clean or clean.startswith(("http://", "https://", "mailto:")):
+                continue
+            destination = (document.parent / clean).resolve()
+            try:
+                destination.relative_to(ROOT.resolve())
+            except ValueError:
+                errors.append(f"public documentation link escapes the repository in {document.relative_to(ROOT)}: {target}")
+                continue
+            if not destination.exists():
+                errors.append(f"broken public documentation link in {document.relative_to(ROOT)}: {target}")
+
+    for svg in (ROOT / "assets").rglob("*.svg"):
+        try:
+            root = ET.parse(svg).getroot()
+        except (ET.ParseError, OSError) as exc:
+            errors.append(f"invalid SVG {svg.relative_to(ROOT)}: {exc}")
+            continue
+        if "viewBox" not in root.attrib:
+            errors.append(f"SVG has no viewBox: {svg.relative_to(ROOT)}")
+        title = root.find("{http://www.w3.org/2000/svg}title")
+        if title is None or not (title.text or "").strip():
+            errors.append(f"informative SVG has no title: {svg.relative_to(ROOT)}")
+
+    setup = ROOT / "bin" / "setup"
+    if not setup.is_file() or not os.access(setup, os.X_OK):
+        errors.append("bin/setup must exist and be executable")
+    if not (ROOT / "bin" / "setup.ps1").is_file():
+        errors.append("bin/setup.ps1 is missing")
+    upstream_script = ROOT / "bin" / "agent-upstreams"
+    if not upstream_script.is_file() or not os.access(upstream_script, os.X_OK):
+        errors.append("bin/agent-upstreams must exist and be executable")
+
+
+def validate_repo(native: bool = False) -> None:
+    errors: list[str] = []
+    validate_public_surface(errors)
+    source_cases = {
+        "udhawan97/agent-toolkit": "udhawan97/agent-toolkit",
+        "https://github.com/udhawan97/agent-toolkit.git": "udhawan97/agent-toolkit",
+        "git@github.com:udhawan97/agent-toolkit.git": "udhawan97/agent-toolkit",
+        "ssh://git@github.com/udhawan97/agent-toolkit.git": "udhawan97/agent-toolkit",
+        "https://evil.example/udhawan97/agent-toolkit": None,
+        "file:///tmp/udhawan97/agent-toolkit": None,
+        "https://github.com/evil/udhawan97/agent-toolkit": None,
+        "suffix.example/udhawan97/agent-toolkit": None,
+    }
+    for source, expected_repo in source_cases.items():
+        if github_repo_name(source) != expected_repo:
+            errors.append(f"GitHub source normalizer accepted or rejected the wrong form: {source}")
+    codex_market = load_json(ROOT / ".agents" / "plugins" / "marketplace.json")
+    claude_market = load_json(ROOT / ".claude-plugin" / "marketplace.json")
+    codex_entries = {entry["name"]: entry for entry in codex_market.get("plugins", [])}
+    claude_entries = {entry["name"]: entry for entry in claude_market.get("plugins", [])}
+    if codex_market.get("name") != MARKETPLACE or claude_market.get("name") != MARKETPLACE:
+        errors.append("both marketplace manifests must use the agent-toolkit name")
+    plugin_dirs = sorted(path for path in (ROOT / "plugins").iterdir() if path.is_dir())
+    plugin_names = {path.name for path in plugin_dirs}
+    if plugin_names != set(codex_entries) or plugin_names != set(claude_entries):
+        errors.append("plugin folders and both marketplace catalogs must contain the same names")
+    for plugin_dir in plugin_dirs:
+        name = plugin_dir.name
+        codex_manifest = load_json(plugin_dir / ".codex-plugin" / "plugin.json")
+        claude_manifest = load_json(plugin_dir / ".claude-plugin" / "plugin.json")
+        versions = {
+            codex_manifest.get("version"),
+            claude_manifest.get("version"),
+            claude_entries.get(name, {}).get("version"),
+        }
+        if codex_manifest.get("name") != name or claude_manifest.get("name") != name:
+            errors.append(f"plugin folder and manifest names differ: {name}")
+        if len(versions) != 1 or not re.fullmatch(r"\d+\.\d+\.\d+", str(next(iter(versions)))):
+            errors.append(f"plugin versions are not matching strict semver: {name}")
+        if codex_entries.get(name, {}).get("source", {}).get("path") != f"./plugins/{name}":
+            errors.append(f"Codex marketplace source is wrong: {name}")
+        if claude_entries.get(name, {}).get("source") != f"./plugins/{name}":
+            errors.append(f"Claude marketplace source is wrong: {name}")
+        skills = sorted((plugin_dir / "skills").glob("*/SKILL.md"))
+        if not skills:
+            errors.append(f"plugin has no skills: {name}")
+        for skill in skills:
+            validate_frontmatter(skill, errors)
+    tracked = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        check=False,
+        capture_output=True,
+    )
+    public_paths = []
+    if tracked.returncode == 0:
+        public_paths = [ROOT / item.decode("utf-8") for item in tracked.stdout.split(b"\0") if item]
+    else:
+        public_paths = [path for path in ROOT.rglob("*") if ".git" not in path.parts]
+    absolute_home_markers = ("/" + "Users" + "/", "C:" + "\\" + "Users" + "\\")
+    for path in public_paths:
+        if path.is_symlink():
+            errors.append(f"repository contains a symlink: {path.relative_to(ROOT)}")
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for forbidden in absolute_home_markers:
+                if forbidden in text:
+                    errors.append(f"personal path {forbidden!r} in {path.relative_to(ROOT)}")
+    history = subprocess.run(
+        ["git", "-C", str(ROOT), "log", "--all", "--format=%an%x00%ae%x00"],
+        check=False,
+        capture_output=True,
+    )
+    if history.returncode == 0:
+        identities = history.stdout.decode("utf-8").split("\0")
+        pairs = zip(identities[0::2], identities[1::2])
+        allowed_identity = ("Agent Toolkit Contributors", "contributors@agent-toolkit.invalid")
+        for author, email in pairs:
+            if author and (author, email) != allowed_identity:
+                errors.append("Git history contains non-generic author metadata")
+                break
+    upstream_catalog = load_json(ROOT / "catalog" / "upstreams.json")
+    upstream_bundles = upstream_catalog.get("bundles", {}) if isinstance(upstream_catalog, dict) else {}
+    if upstream_catalog.get("schemaVersion") != 1 or not isinstance(upstream_bundles, dict):
+        errors.append("catalog/upstreams.json has an unsupported schema")
+        upstream_bundles = {}
+    for profile_path in (ROOT / "profiles").glob("*.json"):
+        profile = load_json(profile_path)
+        unknown = set(profile.get("plugins", [])) - plugin_names
+        if unknown:
+            errors.append(f"unknown plugins in {profile_path.name}: {sorted(unknown)}")
+        upstreams = profile.get("upstreams")
+        if not isinstance(upstreams, list) or not all(isinstance(item, str) for item in upstreams):
+            errors.append(f"invalid upstream list in {profile_path.name}")
+        else:
+            unknown_upstreams = set(upstreams) - set(upstream_bundles)
+            if unknown_upstreams:
+                errors.append(f"unknown upstream bundles in {profile_path.name}: {sorted(unknown_upstreams)}")
+        if not isinstance(profile.get("guidance"), bool):
+            errors.append(f"invalid guidance value in {profile_path.name}")
+    if errors:
+        raise ToolkitError("Validation failed:\n- " + "\n- ".join(errors))
+    print(f"Validation passed: {len(plugin_dirs)} plugin(s), {sum(len(list((p / 'skills').glob('*/SKILL.md'))) for p in plugin_dirs)} skill(s)")
+    if native:
+        if shutil.which("claude"):
+            run(["claude", "plugin", "validate", str(ROOT)])
+            for plugin_dir in plugin_dirs:
+                run(["claude", "plugin", "validate", str(plugin_dir)])
+            print("PASS native Claude marketplace and plugin validation")
+        else:
+            print("SKIP native Claude validation: claude is not available on PATH")
+    codex_validator = Path.home() / ".codex" / "skills" / ".system" / "plugin-creator" / "scripts" / "validate_plugin.py"
+    if native and codex_validator.is_file():
+        uv = shutil.which("uv")
+        if not uv:
+            raise ToolkitError("Codex native validation requires uv to provide the pinned PyYAML dependency.")
+        for plugin_dir in plugin_dirs:
+            run([uv, "run", "--with", "PyYAML==6.0.3", "python", str(codex_validator), str(plugin_dir)])
+        print("PASS native Codex plugin validation")
+    elif native:
+        print("SKIP native Codex validation: the system plugin validator is not installed")
+
+
+def ensure_clients_available(clients: list[str]) -> None:
+    missing = [client for client in clients if not shutil.which(client)]
+    if missing:
+        raise ToolkitError("Client recorded in the installation receipt is not available on PATH: " + ", ".join(missing))
+
+
+def lifecycle_plan(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    client_state = state["clients"]
+    clients = choose_clients(args.clients) if args.clients else list(client_state)
+    ensure_clients_available(clients)
+    plan: dict[str, dict[str, Any]] = {}
+    for client in clients:
+        recorded = client_state.get(client)
+        if not isinstance(recorded, dict):
+            raise ToolkitError(f"{client} is not owned by this installation receipt; run install for that client first")
+        if args.profile:
+            plan[client] = {"profile": args.profile, "plugins": profile_plugins(args.profile)}
+        else:
+            plugins = recorded.get("plugins")
+            if not isinstance(plugins, list) or not all(isinstance(plugin, str) for plugin in plugins):
+                raise ToolkitError(f"Invalid plugin list in receipt for {client}")
+            plan[client] = {"profile": recorded.get("profile", "custom"), "plugins": plugins}
+    return plan
+
+
+def upstream_plan_groups(
+    plan: dict[str, dict[str, Any]], state: dict[str, Any] | None, *, core_only: bool
+) -> dict[str, list[str]]:
+    if core_only:
+        return {}
+    groups: dict[str, list[str]] = {}
+    for client, desired in plan.items():
+        entry = state["clients"].get(client) if state else None
+        if entry and not entry.get("upstreamsEnabled", True):
+            continue
+        groups.setdefault(desired["profile"], []).append(client)
+    return groups
+
+
+def uninstall_plugin(client: str, plugin: str, dry_run: bool, purge_data: bool = False) -> None:
+    selector = f"{plugin}@{MARKETPLACE}"
+    if client == "codex":
+        command = ["codex", "plugin", "remove", selector, "--json"]
+    else:
+        command = ["claude", "plugin", "uninstall", selector, "--scope", "user"]
+        if not purge_data:
+            command.append("--keep-data")
+    run(command, dry_run=dry_run)
+
+
+def preflight_codex_plugin(plugin: str, expected: dict[str, Any], dry_run: bool) -> None:
+    print(f"+ preflight {plugin}@{MARKETPLACE} in a disposable Codex home")
+    if dry_run:
+        return
+    with tempfile.TemporaryDirectory(prefix="agent-toolkit-codex-preflight-") as temp_root:
+        preflight_home = Path(temp_root) / "codex"
+        preflight_home.mkdir(mode=0o700)
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(preflight_home)
+        if expected.get("kind") == "local":
+            add_marketplace = ["codex", "plugin", "marketplace", "add", str(expected["path"]), "--json"]
+        else:
+            add_marketplace = [
+                "codex",
+                "plugin",
+                "marketplace",
+                "add",
+                str(expected["repo"]),
+                "--ref",
+                str(expected["channel"]),
+                "--json",
+            ]
+        run(add_marketplace, env=env)
+        run(["codex", "plugin", "add", f"{plugin}@{MARKETPLACE}", "--json"], env=env)
+
+
+def command_install(args: argparse.Namespace) -> None:
+    validate_repo(native=False)
+    clients = choose_clients(args.clients)
+    plugins = profile_plugins(args.profile)
+    if not getattr(args, "core_only", False) and not args.dry_run:
+        print("Preflight: checking upstream prerequisites and source identities.")
+        run_upstreams("install", clients, args.profile, dry_run=True)
+    codex_source, claude_source, local = marketplace_source(args.source, args.repo, args.channel)
+    expected = source_spec(codex_source, args.channel, local)
+    state = load_state() or {
+        "schemaVersion": 2,
+        "installedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "clients": {},
+        "guidance": [],
+    }
+    if state.get("clients") and state.get("source") != expected:
+        raise ToolkitError("The requested source differs from the source recorded in the existing receipt; uninstall first")
+    state["source"] = expected
+    guidance = list(state.get("guidance", []))
+    include_guidance = args.include_guidance or (
+        profile_guidance(args.profile) and not getattr(args, "no_guidance", False)
+    )
+    upstreams_enabled = not getattr(args, "core_only", False)
+    for client in clients:
+        previous = state["clients"].get(client, {})
+        previous_plugins = (
+            previous.get("plannedPlugins", []) if previous.get("status") == "installing" else previous.get("plugins", [])
+        )
+        if previous and set(previous_plugins) != set(plugins):
+            raise ToolkitError(f"{client} already uses a different profile; use update --profile {args.profile}")
+        existing_marketplace = marketplace_entry(client)
+        if not args.dry_run and not previous and existing_marketplace is None:
+            state["clients"][client] = {
+                "profile": args.profile,
+                "plugins": [],
+                "pluginOwnership": {},
+                "marketplaceCreated": True,
+                "status": "installing",
+                "plannedPlugins": plugins,
+                "upstreamsEnabled": upstreams_enabled,
+                "guidanceEnabled": include_guidance,
+            }
+            state["guidance"] = guidance
+            state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            save_state(state)
+            previous = state["clients"][client]
+        created = register_marketplace(client, codex_source, claude_source, args.channel, local, args.dry_run)
+        ownership = dict(previous.get("pluginOwnership", {}))
+        installed = {plugin: plugin_is_installed(client, plugin) for plugin in plugins}
+        unowned = [plugin for plugin in plugins if installed[plugin] and plugin not in ownership]
+        if unowned and not args.adopt_existing:
+            raise ToolkitError(
+                "Refusing to take ownership of pre-existing plugin(s): "
+                + ", ".join(unowned)
+                + ". Re-run with --adopt-existing to manage them explicitly."
+            )
+        for plugin in plugins:
+            if installed[plugin]:
+                if plugin not in ownership:
+                    ownership[plugin] = "adopted"
+                    print(f"= explicitly adopted pre-existing {plugin}@{MARKETPLACE} for {client}")
+                else:
+                    print(f"= {plugin}@{MARKETPLACE} already owned for {client}")
+            else:
+                ownership.setdefault(plugin, "created")
+        if not args.dry_run:
+            state["clients"][client] = {
+                "profile": args.profile,
+                "plugins": plugins,
+                "pluginOwnership": ownership,
+                "marketplaceCreated": bool(previous.get("marketplaceCreated")) or created,
+                "status": "installing",
+                "plannedPlugins": plugins,
+                "upstreamsEnabled": upstreams_enabled,
+                "guidanceEnabled": include_guidance,
+            }
+            state["guidance"] = guidance
+            state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            save_state(state)
+        for plugin in plugins:
+            if not installed[plugin]:
+                install_plugin(client, plugin, args.dry_run)
+        if include_guidance:
+            result = merge_guidance(client, args.dry_run)
+            if result:
+                guidance.append(result)
+        if not args.dry_run:
+            state["clients"][client]["status"] = "active"
+            state["clients"][client].pop("plannedPlugins", None)
+            state["guidance"] = guidance
+            state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            save_state(state)
+    if upstreams_enabled:
+        run_upstreams("install", clients, args.profile, dry_run=args.dry_run)
+    print("Install complete. Start a fresh client session before invoking newly installed skills.")
+
+
+def command_update(args: argparse.Namespace) -> None:
+    validate_repo(native=False)
+    state = load_state()
+    if not state:
+        raise ToolkitError("No installation receipt found; run install before update")
+    pending = [client for client, entry in state["clients"].items() if entry.get("status") == "installing"]
+    if pending:
+        raise ToolkitError("Installation is incomplete for " + ", ".join(pending) + "; rerun install or uninstall")
+    expected = state.get("source")
+    if not isinstance(expected, dict):
+        raise ToolkitError("Installation receipt has no valid marketplace source")
+    plan = lifecycle_plan(args, state)
+    for client, desired in plan.items():
+        require_matching_marketplace(client, expected)
+        if expected.get("kind") == "local":
+            print(f"= {MARKETPLACE} uses the local checkout; marketplace refresh is not needed for {client}")
+        elif client == "codex":
+            run(["codex", "plugin", "marketplace", "upgrade", MARKETPLACE, "--json"], dry_run=args.dry_run)
+        else:
+            run(["claude", "plugin", "marketplace", "update", MARKETPLACE], dry_run=args.dry_run)
+        if not args.dry_run:
+            require_matching_marketplace(client, expected)
+
+        plugins = desired["plugins"]
+        ownership = dict(state["clients"][client]["pluginOwnership"])
+        installed = {plugin: plugin_is_installed(client, plugin) for plugin in plugins}
+        unowned = [plugin for plugin in plugins if installed[plugin] and plugin not in ownership]
+        if unowned and not args.adopt_existing:
+            raise ToolkitError(
+                "Refusing to take ownership of pre-existing plugin(s): "
+                + ", ".join(unowned)
+                + ". Re-run with --adopt-existing to manage them explicitly."
+            )
+        previous_plugins = set(state["clients"][client].get("plugins", []))
+        for removed in sorted(previous_plugins - set(plugins)):
+            if removed in ownership and (args.dry_run or plugin_is_installed(client, removed)):
+                uninstall_plugin(client, removed, args.dry_run)
+            ownership.pop(removed, None)
+        for plugin in plugins:
+            if plugin not in ownership:
+                ownership[plugin] = "adopted" if installed[plugin] else "created"
+            if client == "codex":
+                preflight_codex_plugin(plugin, expected, args.dry_run)
+                if installed[plugin]:
+                    uninstall_plugin(client, plugin, args.dry_run)
+                run(["codex", "plugin", "add", f"{plugin}@{MARKETPLACE}", "--json"], dry_run=args.dry_run)
+            elif args.dry_run or installed[plugin]:
+                run(["claude", "plugin", "update", f"{plugin}@{MARKETPLACE}", "--scope", "user"], dry_run=args.dry_run)
+            else:
+                install_plugin(client, plugin, args.dry_run)
+        if state["clients"][client].get("guidanceEnabled", False):
+            result = merge_guidance(client, args.dry_run)
+            if result:
+                state.setdefault("guidance", []).append(result)
+        if not args.dry_run:
+            state["clients"][client]["profile"] = desired["profile"]
+            state["clients"][client]["plugins"] = plugins
+            state["clients"][client]["pluginOwnership"] = ownership
+            state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            save_state(state)
+    groups = upstream_plan_groups(plan, state, core_only=getattr(args, "core_only", False))
+    for profile, selected_clients in groups.items():
+        run_upstreams("update", selected_clients, profile, dry_run=args.dry_run)
+    print("Update complete. Restart active client sessions to load the new version.")
+
+
+def command_uninstall(args: argparse.Namespace) -> None:
+    state = load_state()
+    if not state:
+        raise ToolkitError("No installation receipt found; use the native client commands for an untracked installation")
+    expected = state.get("source")
+    if not isinstance(expected, dict):
+        raise ToolkitError("Installation receipt has no valid marketplace source")
+    plan = lifecycle_plan(args, state)
+    for client, selected in plan.items():
+        recorded = state["clients"][client]
+        registered = marketplace_entry(client)
+        if registered:
+            matches, detail = marketplace_matches(client, registered, expected)
+            if not matches:
+                raise ToolkitError(
+                    f"Refusing to trust the existing {MARKETPLACE} marketplace for {client}: {detail}. "
+                    "Remove or rename the conflicting marketplace, then run install again."
+                )
+        elif recorded.get("marketplaceCreated"):
+            print(f"= receipt-owned {MARKETPLACE} marketplace is already absent for {client}")
+        else:
+            raise ToolkitError(f"{MARKETPLACE} is not registered for {client}; it was not created by this receipt")
+        ownership = recorded["pluginOwnership"]
+        selected_plugins = set(selected["plugins"])
+        recorded_plugins = set(recorded.get("plugins", []))
+        for plugin in sorted(selected_plugins & recorded_plugins & set(ownership)):
+            if args.dry_run or plugin_is_installed(client, plugin):
+                uninstall_plugin(client, plugin, args.dry_run, purge_data=args.purge_data)
+        if args.remove_guidance:
+            remove_guidance(client, args.dry_run)
+        remaining = sorted(recorded_plugins - selected_plugins)
+        if remaining:
+            if not args.dry_run:
+                recorded["plugins"] = remaining
+                recorded["pluginOwnership"] = {plugin: ownership[plugin] for plugin in remaining}
+                recorded["profile"] = "custom"
+                state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                save_state(state)
+            continue
+        if recorded.get("marketplaceCreated"):
+            if registered:
+                command = (
+                    ["codex", "plugin", "marketplace", "remove", MARKETPLACE, "--json"]
+                    if client == "codex"
+                    else ["claude", "plugin", "marketplace", "remove", MARKETPLACE, "--scope", "user"]
+                )
+                run(command, dry_run=args.dry_run)
+        else:
+            print(f"= keeping pre-existing {MARKETPLACE} marketplace for {client}")
+        if not args.dry_run:
+            del state["clients"][client]
+            if state["clients"]:
+                state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                save_state(state)
+            elif STATE_FILE.exists():
+                STATE_FILE.unlink()
+    print("Uninstall complete. Backups under ~/.agent-toolkit/backups are retained for recovery.")
+
+
+def command_doctor(args: argparse.Namespace) -> None:
+    state = load_state()
+    validate_repo(native=args.native)
+    if state:
+        pending = [client for client, entry in state["clients"].items() if entry.get("status") == "installing"]
+        if pending:
+            raise ToolkitError("Installation is incomplete for " + ", ".join(pending) + "; rerun install or uninstall")
+    if args.clients:
+        clients = choose_clients(args.clients)
+    elif state:
+        clients = list(state["clients"])
+        ensure_clients_available(clients)
+    else:
+        clients = detected_clients()
+    if not clients:
+        raise ToolkitError("Doctor found no installation receipt and no supported client on PATH")
+    failures = 0
+    for client in clients:
+        version = run([client, "--version"], capture=True)
+        assert version is not None
+        print(f"PASS {client}: {(version.stdout or version.stderr).strip()}")
+        registered = marketplace_is_registered(client)
+        print(f"{'PASS' if registered else 'FAIL'} {client} marketplace: {'registered' if registered else 'not registered'}")
+        failures += 0 if registered else 1
+        if state and client in state["clients"]:
+            require_matching_marketplace(client, state["source"])
+            plugins = profile_plugins(args.profile) if args.profile else state["clients"][client]["plugins"]
+        else:
+            plugins = profile_plugins(args.profile or "recommended")
+        if registered:
+            for plugin in plugins:
+                installed = plugin_is_installed(client, plugin)
+                print(f"{'PASS' if installed else 'FAIL'} {client} plugin: {plugin}")
+                failures += 0 if installed else 1
+    if failures:
+        raise ToolkitError(f"Doctor found {failures} missing or disabled installation component(s)")
+    upstream_plan: dict[str, dict[str, Any]] = {}
+    for client in clients:
+        entry = state["clients"].get(client) if state else None
+        profile = args.profile or (entry.get("profile", "recommended") if entry else "recommended")
+        upstream_plan[client] = {"profile": profile, "plugins": []}
+    groups = upstream_plan_groups(
+        upstream_plan, state, core_only=getattr(args, "core_only", False)
+    )
+    for profile, selected_clients in groups.items():
+        run_upstreams("doctor", selected_clients, profile)
+
+
+def add_common(parser: argparse.ArgumentParser, *, receipt_defaults: bool = False) -> None:
+    default_clients = None if receipt_defaults else "auto"
+    default_profile = None if receipt_defaults else "recommended"
+    parser.add_argument("--clients", choices=("auto", "codex", "claude", "both"), default=default_clients)
+    parser.add_argument("--profile", choices=("recommended", "skills-only", "full"), default=default_profile)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--core-only", action="store_true", help="skip all allowlisted upstream packages")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="agent-kit", description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    install = subparsers.add_parser("install", help="register marketplaces and install a profile")
+    add_common(install)
+    install.add_argument("--source", choices=("auto", "local", "github"), default="auto")
+    install.add_argument("--repo", default=DEFAULT_REPO, help="GitHub owner/repository for --source github")
+    install.add_argument("--channel", choices=("stable", "main"), default="stable")
+    install.add_argument("--adopt-existing", action="store_true", help="explicitly manage matching plugins already installed from this marketplace")
+    install.add_argument("--include-guidance", action="store_true", help="merge the managed global guidance block")
+    install.add_argument("--no-guidance", action="store_true", help="do not merge the profile's managed guidance block")
+    install.set_defaults(handler=command_install)
+    update = subparsers.add_parser("update", help="refresh the marketplace and installed profile")
+    add_common(update, receipt_defaults=True)
+    update.add_argument("--adopt-existing", action="store_true", help="explicitly manage newly selected matching plugins already installed")
+    update.set_defaults(handler=command_update)
+    uninstall = subparsers.add_parser("uninstall", help="remove the installed profile and marketplace")
+    add_common(uninstall, receipt_defaults=True)
+    uninstall.add_argument("--remove-guidance", action="store_true")
+    uninstall.add_argument("--purge-data", action="store_true", help="also delete Claude plugin persistent data")
+    uninstall.set_defaults(handler=command_uninstall)
+    doctor = subparsers.add_parser("doctor", help="validate the repository and installed clients")
+    doctor.add_argument("--clients", choices=("auto", "codex", "claude", "both"))
+    doctor.add_argument("--profile", choices=("recommended", "skills-only", "full"))
+    doctor.add_argument("--native", action="store_true", help="also run installed native manifest validators")
+    doctor.add_argument("--core-only", action="store_true", help="verify only Agent Toolkit's owned plugin")
+    doctor.set_defaults(handler=command_doctor)
+    validate = subparsers.add_parser("validate", help="validate manifests, profiles, paths, and skill portability")
+    validate.add_argument("--native", action="store_true")
+    validate.set_defaults(handler=lambda args: validate_repo(native=args.native))
+    return parser
+
+
+def main() -> int:
+    try:
+        args = build_parser().parse_args()
+        args.handler(args)
+        return 0
+    except ToolkitError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
