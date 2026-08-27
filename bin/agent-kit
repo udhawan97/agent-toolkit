@@ -631,16 +631,15 @@ def validate_repo(native: bool = False) -> None:
                 if forbidden in text:
                     errors.append(f"personal path {forbidden!r} in {path.relative_to(ROOT)}")
     history = subprocess.run(
-        ["git", "-C", str(ROOT), "log", "--all", "--format=%an%x00%ae%x00"],
+        ["git", "-C", str(ROOT), "log", "--all", "--format=%an%x00%ae"],
         check=False,
         capture_output=True,
     )
     if history.returncode == 0:
-        identities = history.stdout.decode("utf-8").split("\0")
-        pairs = zip(identities[0::2], identities[1::2])
         allowed_identity = ("Agent Toolkit Contributors", "contributors@agent-toolkit.invalid")
-        for author, email in pairs:
-            if author and (author, email) != allowed_identity:
+        for record in history.stdout.decode("utf-8").splitlines():
+            identity = tuple(record.split("\0", 1))
+            if identity != allowed_identity:
                 errors.append("Git history contains non-generic author metadata")
                 break
     upstream_catalog = load_json(ROOT / "catalog" / "upstreams.json")

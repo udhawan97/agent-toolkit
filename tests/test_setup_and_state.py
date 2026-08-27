@@ -420,7 +420,11 @@ class UpstreamSafetyTests(unittest.TestCase):
             (source / ".graphify_version").write_text("0.9.50\n", encoding="utf-8")
             with patch.dict(
                 os.environ,
-                {"HOME": str(root / "home"), "CODEX_HOME": str(root / "codex")},
+                {
+                    "HOME": str(root / "home"),
+                    "USERPROFILE": str(root / "home"),
+                    "CODEX_HOME": str(root / "codex"),
+                },
                 clear=False,
             ):
                 self.module.sync_graphify_discovery("codex")
