@@ -39,6 +39,26 @@ class ToolkitError(RuntimeError):
     pass
 
 
+def client_config_root(client: str) -> Path:
+    variable = "CODEX_HOME" if client == "codex" else "CLAUDE_CONFIG_DIR"
+    default = Path.home() / (".codex" if client == "codex" else ".claude")
+    raw = os.environ.get(variable)
+    if raw is not None and not raw.strip():
+        raise ToolkitError(f"{variable} must not be empty")
+    path = Path(raw).expanduser() if raw is not None else default
+    if not path.is_absolute():
+        raise ToolkitError(f"{variable} must be an absolute directory: {path}")
+    path = Path(os.path.abspath(path))
+    if path == Path(path.anchor):
+        raise ToolkitError(f"{variable} must not be a filesystem root: {path}")
+    return path
+
+
+def validate_client_roots(clients: list[str]) -> None:
+    for client in clients:
+        client_config_root(client)
+
+
 def load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -147,11 +167,13 @@ def choose_clients(requested: str) -> list[str]:
     if requested == "auto":
         if not detected:
             raise ToolkitError("Neither Codex nor Claude Code is available on PATH.")
+        validate_client_roots(detected)
         return detected
     wanted = [requested] if requested in {"codex", "claude"} else ["codex", "claude"]
     missing = [name for name in wanted if name not in detected]
     if missing:
         raise ToolkitError("Requested client is not available on PATH: " + ", ".join(missing))
+    validate_client_roots(wanted)
     return wanted
 
 
@@ -185,6 +207,7 @@ def run_upstreams(
     profile: str,
     *,
     dry_run: bool = False,
+    adopt_existing: bool = False,
 ) -> None:
     script = ROOT / "bin" / "agent-upstreams"
     if not script.is_file():
@@ -200,6 +223,8 @@ def run_upstreams(
     ]
     if dry_run:
         invocation.append("--dry-run")
+    if adopt_existing:
+        invocation.append("--adopt-existing")
     run(invocation)
 
 
@@ -437,10 +462,10 @@ def atomic_write(target: Path, content: str, mode: int | None = None) -> None:
 
 def merge_guidance(client: str, dry_run: bool) -> dict[str, str] | None:
     if client == "codex":
-        target = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "AGENTS.md"
+        target = client_config_root("codex") / "AGENTS.md"
         template = ROOT / "templates" / "codex" / "AGENTS.md"
     else:
-        target = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "CLAUDE.md"
+        target = client_config_root("claude") / "CLAUDE.md"
         template = ROOT / "templates" / "claude" / "CLAUDE.md"
     block = managed_guidance(template)
     current = target.read_text(encoding="utf-8") if target.exists() else ""
@@ -467,9 +492,9 @@ def merge_guidance(client: str, dry_run: bool) -> dict[str, str] | None:
 
 def remove_guidance(client: str, dry_run: bool) -> None:
     if client == "codex":
-        target = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "AGENTS.md"
+        target = client_config_root("codex") / "AGENTS.md"
     else:
-        target = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "CLAUDE.md"
+        target = client_config_root("claude") / "CLAUDE.md"
     if not target.exists():
         return
     current = target.read_text(encoding="utf-8")
@@ -608,6 +633,33 @@ def validate_repo(native: bool = False) -> None:
             errors.append(f"plugin has no skills: {name}")
         for skill in skills:
             validate_frontmatter(skill, errors)
+    personal_catalog = load_json(ROOT / "catalog" / "personal-skills.json")
+    if not isinstance(personal_catalog, dict):
+        personal_catalog = {}
+    personal_plugin = personal_catalog.get("plugin")
+    personal_skills = personal_catalog.get("skills")
+    if (
+        personal_catalog.get("schemaVersion") != 1
+        or personal_plugin not in plugin_names
+        or not isinstance(personal_skills, dict)
+        or not personal_skills
+    ):
+        errors.append("catalog/personal-skills.json has an unsupported schema or plugin")
+    else:
+        packaged = {
+            path.parent.name
+            for path in (ROOT / "plugins" / personal_plugin / "skills").glob("*/SKILL.md")
+        }
+        if set(personal_skills) != packaged:
+            errors.append(
+                "personal skill catalog and packaged toolkit-owned skills must match exactly"
+            )
+        for name, metadata in personal_skills.items():
+            if not isinstance(metadata, dict) or not all(
+                isinstance(metadata.get(field), str) and metadata[field].strip()
+                for field in ("origin", "distribution")
+            ):
+                errors.append(f"personal skill catalog entry lacks provenance fields: {name}")
     tracked = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         check=False,
@@ -694,6 +746,7 @@ def lifecycle_plan(args: argparse.Namespace, state: dict[str, Any]) -> dict[str,
     client_state = state["clients"]
     clients = choose_clients(args.clients) if args.clients else list(client_state)
     ensure_clients_available(clients)
+    validate_client_roots(clients)
     plan: dict[str, dict[str, Any]] = {}
     for client in clients:
         recorded = client_state.get(client)
@@ -707,6 +760,74 @@ def lifecycle_plan(args: argparse.Namespace, state: dict[str, Any]) -> dict[str,
                 raise ToolkitError(f"Invalid plugin list in receipt for {client}")
             plan[client] = {"profile": recorded.get("profile", "custom"), "plugins": plugins}
     return plan
+
+
+def reconcile_detected_clients(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, Any]:
+    if args.clients is not None:
+        return state
+    missing = [client for client in detected_clients() if client not in state["clients"]]
+    if not missing:
+        return state
+    policies = {
+        (
+            entry.get("profile"),
+            bool(entry.get("upstreamsEnabled", True)),
+            bool(entry.get("guidanceEnabled", True)),
+        )
+        for entry in state["clients"].values()
+    }
+    if len(policies) != 1:
+        raise ToolkitError(
+            "A newly detected client cannot inherit mixed installation settings. "
+            "Run install explicitly for that client with the desired profile."
+        )
+    profile, upstreams_enabled, guidance_enabled = next(iter(policies))
+    if profile not in {"recommended", "skills-only", "full"}:
+        raise ToolkitError(
+            "A newly detected client cannot inherit a custom profile. "
+            "Run install explicitly for that client with a named profile."
+        )
+    expected = state.get("source", {})
+    if expected.get("kind") == "local":
+        if expected.get("path") != str(ROOT.resolve()):
+            raise ToolkitError(
+                "The new client cannot inherit a different local source checkout; "
+                "rerun install from the original toolkit checkout."
+            )
+        source = "local"
+        repo = DEFAULT_REPO
+        channel = "stable"
+    elif expected.get("kind") == "github":
+        source = "github"
+        repo = expected.get("repo")
+        channel = expected.get("channel")
+        if not isinstance(repo, str) or channel not in {"stable", "main"}:
+            raise ToolkitError("Installation receipt has an invalid GitHub source")
+    else:
+        raise ToolkitError("Installation receipt has an unsupported marketplace source")
+    requested = "both" if set(missing) == {"codex", "claude"} else missing[0]
+    print(f"New supported client detected: {', '.join(missing)}. Applying the existing setup.")
+    if args.dry_run:
+        print("+ install the existing profile into the newly detected client")
+        return state
+    command_install(
+        argparse.Namespace(
+            clients=requested,
+            profile=profile,
+            source=source,
+            repo=repo,
+            channel=channel,
+            dry_run=False,
+            adopt_existing=args.adopt_existing,
+            include_guidance=guidance_enabled,
+            no_guidance=not guidance_enabled,
+            core_only=not upstreams_enabled,
+        )
+    )
+    refreshed = load_state()
+    if not refreshed:
+        raise ToolkitError("New-client installation did not produce an installation receipt")
+    return refreshed
 
 
 def upstream_plan_groups(
@@ -853,7 +974,13 @@ def command_install(args: argparse.Namespace) -> None:
             state["updatedAt"] = dt.datetime.now(dt.timezone.utc).isoformat()
             save_state(state)
     if upstreams_enabled:
-        run_upstreams("install", clients, args.profile, dry_run=args.dry_run)
+        run_upstreams(
+            "install",
+            clients,
+            args.profile,
+            dry_run=args.dry_run,
+            adopt_existing=args.adopt_existing,
+        )
     print("Install complete. Start a fresh client session before invoking newly installed skills.")
 
 
@@ -868,6 +995,7 @@ def command_update(args: argparse.Namespace) -> None:
     expected = state.get("source")
     if not isinstance(expected, dict):
         raise ToolkitError("Installation receipt has no valid marketplace source")
+    state = reconcile_detected_clients(args, state)
     plan = lifecycle_plan(args, state)
     for client, desired in plan.items():
         require_matching_marketplace(client, expected)
@@ -903,9 +1031,13 @@ def command_update(args: argparse.Namespace) -> None:
                 if installed[plugin]:
                     uninstall_plugin(client, plugin, args.dry_run)
                 run(["codex", "plugin", "add", f"{plugin}@{MARKETPLACE}", "--json"], dry_run=args.dry_run)
-            elif args.dry_run or installed[plugin]:
-                run(["claude", "plugin", "update", f"{plugin}@{MARKETPLACE}", "--scope", "user"], dry_run=args.dry_run)
             else:
+                # Claude's native updater may keep an unchanged semantic version even
+                # when the stable marketplace source contains newer skill files.
+                # This toolkit owns these receipted plugins, so reinstall them while
+                # retaining plugin data to make the current source tree authoritative.
+                if installed[plugin] or args.dry_run:
+                    uninstall_plugin(client, plugin, args.dry_run)
                 install_plugin(client, plugin, args.dry_run)
         if state["clients"][client].get("guidanceEnabled", False):
             result = merge_guidance(client, args.dry_run)
@@ -919,7 +1051,13 @@ def command_update(args: argparse.Namespace) -> None:
             save_state(state)
     groups = upstream_plan_groups(plan, state, core_only=getattr(args, "core_only", False))
     for profile, selected_clients in groups.items():
-        run_upstreams("update", selected_clients, profile, dry_run=args.dry_run)
+        run_upstreams(
+            "update",
+            selected_clients,
+            profile,
+            dry_run=args.dry_run,
+            adopt_existing=args.adopt_existing,
+        )
     print("Update complete. Restart active client sessions to load the new version.")
 
 

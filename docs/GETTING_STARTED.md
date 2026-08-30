@@ -4,11 +4,14 @@ Agent Toolkit installs one curated catalog through the native plugin marketplace
 
 ## Prerequisites
 
-- Git
-- Python 3.10 or newer
 - Codex CLI, Claude Code, or both available on `PATH`
-- `uv` for Graphify's isolated tool install
-- Node.js with `npx` for Matt Pocock's cross-agent skills installer
+- macOS/Linux copy-paste path: the system's `curl` and POSIX shell
+
+The agent client is the only product prerequisite you choose. When Git or Python 3.10+ with `venv` support is missing, the launcher attempts to install it with a supported OS package manager. Graphify uses a toolkit-managed Python environment, and Matt Pocock's skills are copied directly from their validated source, so Node.js, `npx`, `uv`, and `pipx` are not required.
+
+Automatic system-package setup supports Homebrew, `apt`, `dnf`, `pacman`, `apk`, `zypper`, and Windows `winget`. Set `AGENT_KIT_AUTO_PREREQS=0` if you want setup to stop and let you install prerequisites yourself.
+
+Homebrew must already be available for automatic package installation on macOS. Without it, setup gives a manual Git/Python instruction and exits safely.
 
 The macOS native install and maintenance lifecycle is verified. Linux and Windows validation is configured in CI, while their native client lifecycles still need community verification.
 
@@ -26,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/
 irm https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup.ps1 | iex
 ```
 
-The launcher stores its managed source checkout under the platform’s user data directory. Override this with `AGENT_KIT_SOURCE_DIR` when necessary.
+The launcher stores its managed source checkout under the platform’s user data directory. Override this with `AGENT_KIT_SOURCE_DIR` when necessary. Rerun the same one-line command later: an existing installation is refreshed automatically, a newly available second client inherits the saved setup, and a final `doctor` verifies the result.
 
 ## Review-first setup
 
@@ -144,7 +147,7 @@ Uninstall:
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- uninstall
 ```
 
-Maintenance defaults come from `~/.agent-toolkit/state.json`, not from whichever clients happen to appear later on `PATH`. The core receipt records source, ref, selected profile, plugin and marketplace ownership, upstream opt-in, and guidance opt-in. That means later `update` and `doctor` preserve `--core-only` and `--no-guidance` choices. `~/.agent-toolkit/upstreams.json` records the upstream profile and sources most recently installed or updated.
+Maintenance defaults come from `~/.agent-toolkit/state.json`. The core receipt records source, ref, selected profile, plugin and marketplace ownership, upstream opt-in, and guidance opt-in. Later `update` and `doctor` preserve `--core-only` and `--no-guidance` choices; when one new supported client appears on `PATH`, update applies the same saved policy to it automatically. `~/.agent-toolkit/upstreams.json` also records exact resolved upstream details, including the Matt Pocock source commit, full installed skill inventory, and managed targets.
 
 Upstream packages remain owned by their original package managers. `uninstall` removes the toolkit-owned layer; it does not mass-delete provider or third-party packages.
 
@@ -154,7 +157,7 @@ Upstream packages remain owned by their original package managers. `uninstall` r
 # Track integration work instead of stable
 AGENT_KIT_CHANNEL=main ./bin/setup install
 
-# Explicitly adopt an already installed matching plugin
+# Explicitly adopt already installed matching plugins or conflicting Matt skill directories
 ./bin/agent-kit install --adopt-existing
 
 # Remove the managed guidance block during uninstall

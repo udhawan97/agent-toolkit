@@ -31,7 +31,7 @@ Acceptance requires both clients to report the marketplace and every profile plu
 
 ## Disposable expanded-profile lifecycle
 
-Run this only with network access, `uv`, `npx`, and the two real client CLIs. It fetches the allowlisted upstream packages and a checksum-verified Obscura archive into a disposable home.
+Run this only with network access, Git, Python 3.10+ with `venv` support, and the two real client CLIs. It fetches the allowlisted upstream packages, creates a managed Graphify environment, resolves Matt Pocock's current upstream branch, and downloads a checksum-verified Obscura archive into a disposable home.
 
 ```bash
 AGENT_KIT_UPSTREAM_ROOT=$(mktemp -d)
@@ -53,11 +53,13 @@ CLAUDE_CONFIG_DIR="$AGENT_KIT_UPSTREAM_ROOT/claude" \
 ./bin/agent-kit update
 ```
 
-Acceptance requires all toolkit and upstream doctor rows to pass, Graphify to be discoverable by both agents, all 37 pinned Matt Pocock skills to byte-match their verified source and resolve in both client homes, provider marketplace identities plus plugins to be installed and enabled, the Obscura executable and worker checksums to match the catalog, and both MCP registrations to point exactly to the toolkit-managed binary with the `mcp` argument. Provider login is not part of this test.
+Acceptance requires all toolkit and upstream doctor rows to pass, each Graphify client skill to name the exact invokable toolkit-managed executable, every Matt Pocock skill discovered at the receipted source commit to byte-match that source and resolve in both client homes, provider marketplace identities plus plugins to be installed and enabled, the Obscura executable and worker checksums to match the catalog, and both MCP registrations to point exactly to the toolkit-managed binary with the `mcp` argument. Provider login is not part of this test.
 
 Uninstall the core layer with `--remove-guidance`. Then confirm upstream packages remain, as documented; removal of provider-managed packages is intentionally outside Agent Toolkit's uninstall contract.
 
 Also verify ownership fail-closed behavior before release: manually install a matching plugin, confirm bootstrap installation stops without `--adopt-existing`, and confirm receipt-less update and uninstall leave that plugin untouched. The receipt stages ownership before a native install so an interruption can be recovered safely; rerun the same install command to complete any missing plugin. Native commands are idempotent, and each client’s recovery state is recorded independently.
+
+Verify reconciliation separately: install with only one client executable visible, make the second client visible, rerun the no-argument launcher, and confirm the new client inherits the receipted profile, upstream, and guidance policy before the final doctor passes. For Matt skills, test a synthetic prior receipt with one now-removed skill and confirm update moves that directory into the backup tree rather than leaving it agent-visible.
 
 After `stable` is public, repeat the lifecycle from the real remote launcher in fresh homes and a fresh source directory:
 

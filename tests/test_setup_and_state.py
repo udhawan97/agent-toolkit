@@ -129,6 +129,54 @@ class LauncherRegressionTests(unittest.TestCase):
         self.assert_update_and_ahead_refusal(["sh", str(ROOT / "bin" / "setup")])
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher runs on Linux and macOS")
+    def test_posix_launcher_can_disable_automatic_prerequisite_install(self) -> None:
+        env = self.env | {
+            "AGENT_KIT_AUTO_PREREQS": "0",
+            "PATH": str(self.fake_bin),
+        }
+        refused = run(["/bin/sh", str(ROOT / "bin" / "setup")], env=env, check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("automatic prerequisite setup is disabled", refused.stdout + refused.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher runs on Linux and macOS")
+    def test_posix_one_line_command_refreshes_active_installation(self) -> None:
+        log = self.root / "python-arguments.log"
+        fake_python = self.fake_bin / "python3"
+        fake_python.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AGENT_KIT_PYTHON_LOG\"\nexit 0\n",
+            encoding="utf-8",
+        )
+        fake_python.chmod(0o755)
+        state = self.home / ".agent-toolkit" / "state.json"
+        state.parent.mkdir()
+        state.write_text(
+            json.dumps({"clients": {"codex": {"status": "active"}}}) + "\n",
+            encoding="utf-8",
+        )
+        env = self.env | {"AGENT_KIT_PYTHON_LOG": str(log)}
+        result = run(["sh", str(ROOT / "bin" / "setup")], env=env)
+        self.assertIn("existing installation found; refreshing it", result.stdout)
+        calls = log.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(any("bin/agent-kit update" in call for call in calls))
+        self.assertIn("bin/agent-kit doctor", calls[-1])
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher runs on Linux and macOS")
+    def test_posix_launcher_requires_python_venv_capability(self) -> None:
+        fake_python = self.fake_bin / "python3"
+        fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        fake_python.chmod(0o755)
+        fake_git = self.fake_bin / "git"
+        fake_git.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_git.chmod(0o755)
+        env = self.env | {
+            "AGENT_KIT_AUTO_PREREQS": "0",
+            "PATH": str(self.fake_bin),
+        }
+        refused = run(["/bin/sh", str(ROOT / "bin" / "setup")], env=env, check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("venv support", refused.stdout + refused.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher runs on Linux and macOS")
     def test_posix_launcher_preserves_legacy_checkout_across_sanitized_root(self) -> None:
         fake_python = self.fake_bin / "python3"
         fake_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -199,6 +247,14 @@ class UpstreamSafetyTests(unittest.TestCase):
             self.assertFalse(set(data["upstreams"]) - set(bundles))
         self.assertEqual(bundles["openai-essentials"]["kind"], "codex-official")
 
+    def test_public_personal_skill_manifest_matches_plugin_payload(self) -> None:
+        catalog = json.loads(
+            (ROOT / "catalog" / "personal-skills.json").read_text(encoding="utf-8")
+        )
+        plugin = ROOT / "plugins" / catalog["plugin"] / "skills"
+        packaged = {path.parent.name for path in plugin.glob("*/SKILL.md")}
+        self.assertEqual(set(catalog["skills"]), packaged)
+
     def test_obscura_allowlist_has_strong_digests(self) -> None:
         catalog = json.loads((ROOT / "catalog" / "upstreams.json").read_text(encoding="utf-8"))
         assets = catalog["bundles"]["obscura"]["assets"]
@@ -229,10 +285,17 @@ class UpstreamSafetyTests(unittest.TestCase):
                     side_effect=lambda path: path.mkdir(parents=True, exist_ok=True),
                 ),
             ):
-                self.module.save_receipt("recommended", ["codex"], ["graphify"])
+                self.module.save_receipt(
+                    "recommended",
+                    ["codex"],
+                    ["graphify"],
+                    {"graphify": {"version": "0.9.50"}},
+                )
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve me\n")
             receipt = json.loads((state / "upstreams.json").read_text(encoding="utf-8"))
             self.assertEqual(receipt["bundles"], ["graphify"])
+            self.assertEqual(receipt["schemaVersion"], 2)
+            self.assertEqual(receipt["resolved"]["graphify"]["version"], "0.9.50")
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink behavior is verified here")
     def test_upstream_receipt_refuses_symlinked_destination(self) -> None:
@@ -253,22 +316,473 @@ class UpstreamSafetyTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(self.module.UpstreamError, "Refusing symlinked upstream receipt"),
             ):
-                self.module.save_receipt("recommended", ["codex"], ["graphify"])
+                self.module.save_receipt(
+                    "recommended",
+                    ["codex"],
+                    ["graphify"],
+                    {"graphify": {"version": "0.9.50"}},
+                )
             self.assertEqual(target.read_text(encoding="utf-8"), "preserve me\n")
 
-    def test_graphify_install_refuses_unmanaged_path_fallback(self) -> None:
+    def test_upstream_receipt_preserves_other_managed_client_targets(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-upstream-merge-") as temporary:
+            state = Path(temporary)
+            receipt_file = state / "upstreams.json"
+            receipt_file.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "profile": "recommended",
+                        "clients": ["claude"],
+                        "bundles": ["matt-pocock-skills"],
+                        "resolved": {
+                            "matt-pocock-skills": {
+                                "commit": "a" * 40,
+                                "skills": {"one": "skills/one"},
+                                "targets": ["/managed/claude/skills"],
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(self.module, "STATE_DIR", state),
+                patch.object(self.module, "STATE_FILE", receipt_file),
+                patch.object(self.module, "ensure_private_directory"),
+            ):
+                self.module.save_receipt(
+                    "recommended",
+                    ["codex"],
+                    ["graphify"],
+                    {"graphify": {"version": "0.9.50"}},
+                )
+            merged = json.loads(receipt_file.read_text(encoding="utf-8"))
+            self.assertEqual(merged["clients"], ["claude", "codex"])
+            self.assertEqual(
+                set(merged["resolved"]), {"matt-pocock-skills", "graphify"}
+            )
+
+    def test_graphify_command_refuses_unmanaged_path_fallback(self) -> None:
         bundle = {"package": "graphifyy", "version": "0.9.50", "clients": ["codex"]}
 
         def fake_which(name: str) -> str | None:
             return "/tmp/unverified-graphify" if name == "graphify" else None
 
         with (
+            tempfile.TemporaryDirectory(prefix="agent-toolkit-graphify-managed-") as temporary,
+            patch.object(self.module, "STATE_DIR", Path(temporary)),
             patch.object(self.module.shutil, "which", side_effect=fake_which),
-            patch.object(self.module, "run") as execute,
-            self.assertRaisesRegex(self.module.UpstreamError, "needs uv or pipx"),
+            self.assertRaisesRegex(self.module.UpstreamError, "toolkit-managed environment"),
         ):
-            self.module.install_graphify(bundle, ["codex"], False)
-        execute.assert_not_called()
+            self.module.graphify_command(bundle)
+
+    def test_graphify_dry_run_uses_managed_venv_without_uv(self) -> None:
+        bundle = {"package": "graphifyy", "version": "0.9.50", "clients": ["codex"]}
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-graphify-managed-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir()
+            with (
+                patch.object(self.module, "STATE_DIR", root / "state"),
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.dict(os.environ, {"CODEX_HOME": str(root / "codex")}),
+                patch.object(self.module, "run") as execute,
+            ):
+                self.module.install_graphify(
+                    bundle,
+                    ["codex"],
+                    True,
+                    None,
+                    adopt_existing=False,
+                    profile="recommended",
+                )
+        commands = [call.args[0] for call in execute.call_args_list]
+        self.assertEqual(commands[0][:3], [sys.executable, "-m", "venv"])
+        self.assertIn("graphifyy==0.9.50", commands[1])
+        self.assertFalse(any(command[0] in {"uv", "pipx", "npx"} for command in commands))
+
+    def test_graphify_discovery_pins_invokable_managed_command(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-graphify-pin-") as temporary:
+            root = Path(temporary)
+            skill = root / "skills" / "graphify"
+            executable = root / "managed" / "bin" / "graphify"
+            skill.mkdir(parents=True)
+            executable.parent.mkdir(parents=True)
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (skill / "SKILL.md").write_text(
+                "---\nname: graphify\n---\n\n# Graphify\n\nRun `graphify query`.\n",
+                encoding="utf-8",
+            )
+            self.module.pin_graphify_discovery(skill, executable, root)
+            self.assertIsNone(self.module.graphify_discovery_problem(skill, executable))
+            contents = (skill / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn(str(executable.resolve()), contents)
+            self.assertIn("substitute this absolute command", contents)
+
+    def test_graphify_preflight_refuses_unmanaged_discovery_tree(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-graphify-ownership-") as temporary:
+            root = Path(temporary)
+            destination = root / "client" / "skills" / "graphify"
+            destination.mkdir(parents=True)
+            (destination / "SKILL.md").write_text("# Existing\n", encoding="utf-8")
+            with self.assertRaisesRegex(self.module.UpstreamError, "unmanaged Graphify skill"):
+                self.module.preflight_graphify_destinations(
+                    [(destination, root / "client")],
+                    set(),
+                    adopt_existing=False,
+                    dry_run=False,
+                )
+            self.assertEqual(
+                (destination / "SKILL.md").read_text(encoding="utf-8"), "# Existing\n"
+            )
+
+    def test_upstream_client_root_rejects_relative_and_filesystem_root(self) -> None:
+        for value in ("", ".", os.path.abspath(os.sep)):
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": value}),
+                self.assertRaisesRegex(self.module.UpstreamError, "must not|absolute"),
+            ):
+                self.module.client_config_root("claude")
+
+    def test_matt_install_discovers_every_current_source_skill(self) -> None:
+        bundle = {
+            "repository": "mattpocock/skills",
+            "ref": "main",
+            "skillRoot": "skills",
+            "clients": ["codex", "claude"],
+        }
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-current-") as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout"
+            for group, name in (("engineering", "first-skill"), ("new-category", "brand-new-skill")):
+                skill = checkout / "skills" / group / name
+                skill.mkdir(parents=True)
+                (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+            home = root / "home"
+            home.mkdir()
+            with (
+                patch.dict(os.environ, {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(home / ".claude")}),
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module, "STATE_DIR", home / ".agent-toolkit"),
+                patch.object(
+                    self.module,
+                    "STATE_FILE",
+                    home / ".agent-toolkit" / "upstreams.json",
+                ),
+                patch.object(self.module, "ensure_tracked_skills_checkout", return_value=checkout),
+                patch.object(self.module, "git_value", return_value="a" * 40),
+            ):
+                resolved = self.module.install_skills_package(
+                    bundle,
+                    ["codex", "claude"],
+                    False,
+                    None,
+                    adopt_existing=False,
+                    profile="recommended",
+                )
+            self.assertEqual(set(resolved["skills"]), {"first-skill", "brand-new-skill"})
+            for name in resolved["skills"]:
+                self.assertTrue((home / ".agents" / "skills" / name / "SKILL.md").is_file())
+                self.assertTrue((home / ".claude" / "skills" / name / "SKILL.md").is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink behavior is verified here")
+    def test_matt_install_refuses_symlinked_destination_parent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-destination-") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "home" / ".agents" / "skills" / "example"
+            outside = root / "outside"
+            source.mkdir()
+            outside.mkdir()
+            (source / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+            destination.parent.parent.mkdir(parents=True)
+            destination.parent.symlink_to(outside, target_is_directory=True)
+            with (
+                patch.object(self.module.Path, "home", return_value=root / "home"),
+                self.assertRaisesRegex(self.module.UpstreamError, "symlinked skill destination path"),
+            ):
+                self.module.backup_and_copy_skill(
+                    source,
+                    destination,
+                    root / "backups",
+                    destination.parent.parent,
+                    managed=False,
+                    adopt_existing=False,
+                )
+            self.assertFalse((outside / "example").exists())
+
+    def test_matt_install_refuses_unmanaged_existing_skill_without_adoption(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-ownership-") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "home" / ".agents" / "skills" / "example"
+            source.mkdir(parents=True)
+            destination.mkdir(parents=True)
+            (source / "SKILL.md").write_text("# Current\n", encoding="utf-8")
+            (destination / "SKILL.md").write_text("# Existing\n", encoding="utf-8")
+            with self.assertRaisesRegex(self.module.UpstreamError, "Refusing unmanaged skill"):
+                self.module.backup_and_copy_skill(
+                    source,
+                    destination,
+                    root / "backups",
+                    root / "home" / ".agents",
+                    managed=False,
+                    adopt_existing=False,
+                )
+            self.assertEqual(
+                (destination / "SKILL.md").read_text(encoding="utf-8"), "# Existing\n"
+            )
+
+    def test_matt_install_archives_skills_removed_upstream(self) -> None:
+        bundle = {
+            "repository": "mattpocock/skills",
+            "ref": "main",
+            "skillRoot": "skills",
+            "clients": ["codex"],
+        }
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-stale-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            checkout = root / "checkout"
+            current = checkout / "skills" / "engineering" / "current"
+            installed_root = home / ".agents" / "skills"
+            current.mkdir(parents=True)
+            (current / "SKILL.md").write_text("# Current\n", encoding="utf-8")
+            for name in ("current", "retired"):
+                destination = installed_root / name
+                destination.mkdir(parents=True)
+                (destination / "SKILL.md").write_text(f"# {name.title()}\n", encoding="utf-8")
+            receipt = {
+                "schemaVersion": 2,
+                "bundles": ["matt-pocock-skills"],
+                "resolved": {
+                    "matt-pocock-skills": {
+                        "skills": {"current": "old/current", "retired": "old/retired"},
+                        "targets": [str(installed_root)],
+                    }
+                },
+            }
+            with (
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module, "STATE_DIR", home / ".agent-toolkit"),
+                patch.object(
+                    self.module,
+                    "STATE_FILE",
+                    home / ".agent-toolkit" / "upstreams.json",
+                ),
+                patch.object(self.module, "ensure_tracked_skills_checkout", return_value=checkout),
+                patch.object(self.module, "git_value", return_value="a" * 40),
+            ):
+                resolved = self.module.install_skills_package(
+                    bundle,
+                    ["codex"],
+                    False,
+                    receipt,
+                    adopt_existing=False,
+                    profile="recommended",
+                )
+            self.assertEqual(set(resolved["skills"]), {"current"})
+            self.assertFalse((installed_root / "retired").exists())
+            archived = list(
+                (home / ".agent-toolkit" / "backups").rglob("retired/SKILL.md")
+            )
+            self.assertEqual(len(archived), 1)
+
+    def test_matt_install_accepts_external_claude_config_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-external-") as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            external = root / "external-claude"
+            destination = external / "skills" / "example"
+            source.mkdir()
+            (source / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+            self.module.backup_and_copy_skill(
+                source,
+                destination,
+                root / "backups",
+                external,
+                managed=False,
+                adopt_existing=False,
+            )
+            self.assertTrue((destination / "SKILL.md").is_file())
+
+    def test_matt_partial_client_update_refreshes_all_receipted_targets(self) -> None:
+        bundle = {
+            "repository": "mattpocock/skills",
+            "ref": "main",
+            "skillRoot": "skills",
+            "clients": ["codex", "claude"],
+        }
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-targets-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            state = home / ".agent-toolkit"
+            checkout = state / "sources" / "matt-pocock-skills"
+            source = checkout / "skills" / "engineering" / "example"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("# Current\n", encoding="utf-8")
+            targets = [home / ".agents" / "skills", home / ".claude" / "skills"]
+            for target in targets:
+                installed = target / "example"
+                installed.mkdir(parents=True)
+                (installed / "SKILL.md").write_text("# Previous\n", encoding="utf-8")
+            receipt = {
+                "schemaVersion": 2,
+                "profile": "recommended",
+                "clients": ["codex", "claude"],
+                "bundles": ["matt-pocock-skills"],
+                "resolved": {
+                    "matt-pocock-skills": {
+                        "repository": "mattpocock/skills",
+                        "ref": "main",
+                        "commit": "b" * 40,
+                        "skills": {"example": "skills/engineering/example"},
+                        "targets": [str(target) for target in targets],
+                        "status": "active",
+                    }
+                },
+            }
+            with (
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module, "STATE_DIR", state),
+                patch.object(self.module, "STATE_FILE", state / "upstreams.json"),
+                patch.object(self.module, "ensure_tracked_skills_checkout", return_value=checkout),
+                patch.object(self.module, "git_value", return_value="a" * 40),
+            ):
+                resolved = self.module.install_skills_package(
+                    bundle,
+                    ["codex"],
+                    False,
+                    receipt,
+                    adopt_existing=False,
+                    profile="recommended",
+                )
+            self.assertEqual(set(resolved["targets"]), {str(target) for target in targets})
+            for target in targets:
+                self.assertEqual(
+                    (target / "example" / "SKILL.md").read_text(encoding="utf-8"),
+                    "# Current\n",
+                )
+
+    def test_matt_interrupted_copy_recovers_from_pending_receipt(self) -> None:
+        bundle = {
+            "repository": "mattpocock/skills",
+            "ref": "main",
+            "skillRoot": "skills",
+            "clients": ["codex"],
+        }
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-recovery-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            state = home / ".agent-toolkit"
+            checkout = state / "sources" / "matt-pocock-skills"
+            for name in ("first", "second"):
+                source = checkout / "skills" / "engineering" / name
+                source.mkdir(parents=True)
+                (source / "SKILL.md").write_text(f"# {name.title()}\n", encoding="utf-8")
+            receipt_file = state / "upstreams.json"
+            original_copy = self.module.backup_and_copy_skill
+            calls = {"count": 0}
+
+            def interrupt_second(*args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 2:
+                    raise self.module.UpstreamError("simulated interruption")
+                return original_copy(*args, **kwargs)
+
+            common = (
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module, "STATE_DIR", state),
+                patch.object(self.module, "STATE_FILE", receipt_file),
+                patch.object(self.module, "ensure_tracked_skills_checkout", return_value=checkout),
+                patch.object(self.module, "git_value", return_value="a" * 40),
+            )
+            with (
+                common[0],
+                common[1],
+                common[2],
+                common[3],
+                common[4],
+                patch.object(self.module, "backup_and_copy_skill", side_effect=interrupt_second),
+                self.assertRaisesRegex(self.module.UpstreamError, "simulated interruption"),
+            ):
+                self.module.install_skills_package(
+                    bundle,
+                    ["codex"],
+                    False,
+                    None,
+                    adopt_existing=False,
+                    profile="recommended",
+                )
+            pending = json.loads(receipt_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                pending["resolved"]["matt-pocock-skills"]["status"], "pending"
+            )
+            with (
+                common[0],
+                common[1],
+                common[2],
+                common[3],
+                common[4],
+                patch.object(self.module, "checkout_problem", return_value=None),
+            ):
+                resolved = self.module.install_skills_package(
+                    bundle,
+                    ["codex"],
+                    False,
+                    self.module.load_receipt(),
+                    adopt_existing=False,
+                    profile="recommended",
+                )
+                self.module.save_receipt(
+                    "recommended",
+                    ["codex"],
+                    ["matt-pocock-skills"],
+                    {"matt-pocock-skills": resolved},
+                )
+                self.assertEqual(
+                    self.module.doctor_skills_package(
+                        bundle, ["codex"], self.module.load_receipt()
+                    ),
+                    0,
+                )
+            active = json.loads(receipt_file.read_text(encoding="utf-8"))
+            self.assertEqual(active["resolved"]["matt-pocock-skills"]["status"], "active")
+            for name in ("first", "second"):
+                self.assertTrue((home / ".agents" / "skills" / name / "SKILL.md").is_file())
+
+    def test_matt_doctor_requires_complete_receipted_inventory(self) -> None:
+        bundle = {
+            "repository": "mattpocock/skills",
+            "ref": "main",
+            "skillRoot": "skills",
+            "clients": ["codex"],
+        }
+        receipt = {
+            "resolved": {
+                "matt-pocock-skills": {
+                    "repository": "mattpocock/skills",
+                    "ref": "main",
+                    "commit": "a" * 40,
+                    "skills": {"first": "skills/engineering/first"},
+                }
+            }
+        }
+        with (
+            patch.object(self.module, "checkout_problem", return_value=None),
+            patch.object(
+                self.module,
+                "discover_skill_package",
+                return_value={
+                    "first": "skills/engineering/first",
+                    "new": "skills/engineering/new",
+                },
+            ),
+        ):
+            self.assertEqual(self.module.doctor_skills_package(bundle, ["codex"], receipt), 1)
 
     def test_matt_skill_tree_detects_auxiliary_tampering_and_extras(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent-toolkit-matt-tree-") as temporary:
@@ -513,6 +1027,82 @@ class LifecycleRecoveryTests(unittest.TestCase):
         )
         self.assertEqual(module.upstream_plan_groups(plan, state, core_only=True), {})
 
+    def test_update_reconciles_a_newly_detected_second_client(self) -> None:
+        module = self.module
+        state = {
+            "schemaVersion": 2,
+            "source": {
+                "kind": "github",
+                "path": None,
+                "repo": "udhawan97/agent-toolkit",
+                "channel": "stable",
+            },
+            "clients": {
+                "codex": {
+                    "profile": "recommended",
+                    "status": "active",
+                    "upstreamsEnabled": True,
+                    "guidanceEnabled": True,
+                }
+            },
+        }
+        refreshed = json.loads(json.dumps(state))
+        refreshed["clients"]["claude"] = dict(refreshed["clients"]["codex"])
+        args = SimpleNamespace(clients=None, dry_run=False, adopt_existing=False)
+        with (
+            patch.object(module, "detected_clients", return_value=["codex", "claude"]),
+            patch.object(module, "command_install") as install,
+            patch.object(module, "load_state", return_value=refreshed),
+        ):
+            result = module.reconcile_detected_clients(args, state)
+        self.assertIs(result, refreshed)
+        install_args = install.call_args.args[0]
+        self.assertEqual(install_args.clients, "claude")
+        self.assertEqual(install_args.profile, "recommended")
+        self.assertTrue(install_args.include_guidance)
+        self.assertFalse(install_args.core_only)
+
+    def test_claude_update_reinstalls_receipted_personal_skills_with_data_retained(self) -> None:
+        module = self.module
+        state = {
+            "schemaVersion": 2,
+            "source": {"kind": "local", "path": str(ROOT.resolve()), "repo": None, "channel": None},
+            "clients": {
+                "claude": {
+                    "profile": "recommended",
+                    "plugins": ["evidence-workflows"],
+                    "pluginOwnership": {"evidence-workflows": "created"},
+                    "marketplaceCreated": True,
+                    "status": "active",
+                    "upstreamsEnabled": False,
+                    "guidanceEnabled": False,
+                }
+            },
+            "guidance": [],
+        }
+        args = SimpleNamespace(
+            clients=None,
+            profile=None,
+            dry_run=False,
+            adopt_existing=False,
+            core_only=True,
+        )
+        plan = {"claude": {"profile": "recommended", "plugins": ["evidence-workflows"]}}
+        with (
+            patch.object(module, "validate_repo"),
+            patch.object(module, "load_state", return_value=state),
+            patch.object(module, "reconcile_detected_clients", return_value=state),
+            patch.object(module, "lifecycle_plan", return_value=plan),
+            patch.object(module, "require_matching_marketplace"),
+            patch.object(module, "plugin_is_installed", return_value=True),
+            patch.object(module, "uninstall_plugin") as uninstall,
+            patch.object(module, "install_plugin") as install,
+            patch.object(module, "save_state"),
+        ):
+            module.command_update(args)
+        uninstall.assert_called_once_with("claude", "evidence-workflows", False)
+        install.assert_called_once_with("claude", "evidence-workflows", False)
+
     def test_guidance_honors_configured_client_homes(self) -> None:
         module = self.module
         codex_home = self.root / "custom-codex"
@@ -526,6 +1116,16 @@ class LifecycleRecoveryTests(unittest.TestCase):
             module.merge_guidance("claude", False)
         self.assertIn(module.BEGIN_MARKER, (codex_home / "AGENTS.md").read_text(encoding="utf-8"))
         self.assertIn(module.BEGIN_MARKER, (claude_home / "CLAUDE.md").read_text(encoding="utf-8"))
+
+    def test_core_client_root_rejects_empty_relative_and_filesystem_root(self) -> None:
+        module = self.module
+        for value in ("", ".", os.path.abspath(os.sep)):
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, {"CODEX_HOME": value}),
+                self.assertRaisesRegex(module.ToolkitError, "must not|absolute"),
+            ):
+                module.client_config_root("codex")
 
     def test_uninstall_persists_completed_client_and_recovers_after_failure(self) -> None:
         module = self.module

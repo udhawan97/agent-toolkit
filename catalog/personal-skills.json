@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "plugin": "evidence-workflows",
+  "license": "MIT",
+  "reviewPolicy": "Every personally created skill cleared for public redistribution must be listed here and packaged in the plugin. Private, project-specific, account-bound, duplicated, or third-party skills are excluded.",
+  "skills": {
+    "council-review": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned"
+    },
+    "improve-userflow-design": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned"
+    },
+    "tech-debt": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned"
+    }
+  }
+}

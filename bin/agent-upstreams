@@ -25,10 +25,27 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "catalog" / "upstreams.json"
 STATE_DIR = Path.home() / ".agent-toolkit"
 STATE_FILE = STATE_DIR / "upstreams.json"
+GRAPHIFY_RUNTIME_BEGIN = "<!-- agent-toolkit-graphify-runtime:begin -->"
+GRAPHIFY_RUNTIME_END = "<!-- agent-toolkit-graphify-runtime:end -->"
 
 
 class UpstreamError(RuntimeError):
     pass
+
+
+def client_config_root(client: str) -> Path:
+    variable = "CODEX_HOME" if client == "codex" else "CLAUDE_CONFIG_DIR"
+    default = Path.home() / (".codex" if client == "codex" else ".claude")
+    raw = os.environ.get(variable)
+    if raw is not None and not raw.strip():
+        raise UpstreamError(f"{variable} must not be empty")
+    path = Path(raw).expanduser() if raw is not None else default
+    if not path.is_absolute():
+        raise UpstreamError(f"{variable} must be an absolute directory: {path}")
+    path = Path(os.path.abspath(path))
+    if path == Path(path.anchor):
+        raise UpstreamError(f"{variable} must not be a filesystem root: {path}")
+    return path
 
 
 def load_json(path: Path) -> Any:
@@ -75,15 +92,37 @@ def ensure_private_directory(path: Path) -> None:
         os.chmod(path, 0o700)
 
 
-def save_receipt(profile: str, clients: list[str], bundles: list[str]) -> None:
+def save_receipt(
+    profile: str,
+    clients: list[str],
+    bundles: list[str],
+    resolved: dict[str, dict[str, Any]],
+) -> None:
     ensure_private_directory(STATE_DIR)
     if STATE_FILE.is_symlink():
         raise UpstreamError(f"Refusing symlinked upstream receipt: {STATE_FILE}")
+    previous = load_receipt()
+    previous_clients = previous.get("clients", []) if previous else []
+    previous_bundles = previous.get("bundles", []) if previous else []
+    previous_resolved = previous.get("resolved", {}) if previous else {}
+    merged_clients = list(
+        dict.fromkeys(
+            [item for item in previous_clients if item in {"codex", "claude"}] + clients
+        )
+    )
+    merged_bundles = list(
+        dict.fromkeys(
+            [item for item in previous_bundles if isinstance(item, str)] + bundles
+        )
+    )
+    merged_resolved = dict(previous_resolved) if isinstance(previous_resolved, dict) else {}
+    merged_resolved.update(resolved)
     payload = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "profile": profile,
-        "clients": clients,
-        "bundles": bundles,
+        "clients": merged_clients,
+        "bundles": merged_bundles,
+        "resolved": merged_resolved,
         "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
         "note": "Upstream packages remain owned and maintained by their source providers.",
     }
@@ -109,6 +148,17 @@ def save_receipt(profile: str, clients: list[str], bundles: list[str]) -> None:
             temporary.unlink()
 
 
+def load_receipt() -> dict[str, Any] | None:
+    if not STATE_FILE.exists():
+        return None
+    if STATE_FILE.is_symlink():
+        raise UpstreamError(f"Refusing symlinked upstream receipt: {STATE_FILE}")
+    data = load_json(STATE_FILE)
+    if not isinstance(data, dict) or data.get("schemaVersion") not in {1, 2}:
+        raise UpstreamError("Unsupported upstream receipt schema")
+    return data
+
+
 def selected_clients(raw: str) -> list[str]:
     clients = [item for item in raw.split(",") if item]
     if not clients or any(item not in {"codex", "claude"} for item in clients):
@@ -116,6 +166,8 @@ def selected_clients(raw: str) -> list[str]:
     missing = [item for item in clients if not shutil.which(item)]
     if missing:
         raise UpstreamError("Requested client is not available on PATH: " + ", ".join(missing))
+    for client in clients:
+        client_config_root(client)
     return clients
 
 
@@ -151,50 +203,177 @@ def normalize_repo(value: str) -> str | None:
     return f"{match.group('owner')}/{match.group('repo')}".lower() if match else None
 
 
-def managed_tool_executable(name: str) -> str | None:
-    suffix = ".exe" if os.name == "nt" else ""
-    managers = (
-        ("uv", ["tool", "dir", "--bin"]),
-        ("pipx", ["environment", "--value", "PIPX_BIN_DIR"]),
-    )
-    for manager, arguments in managers:
-        binary = shutil.which(manager)
-        if not binary:
-            continue
-        completed = subprocess.run(
-            [binary, *arguments], check=False, text=True, capture_output=True
-        )
-        candidate = Path(completed.stdout.strip()) / f"{name}{suffix}"
-        if completed.returncode == 0 and candidate.is_file():
-            return str(candidate)
-    return None
+def graphify_environment(bundle: dict[str, Any]) -> Path:
+    return STATE_DIR / "tools" / "graphify" / bundle["version"]
+
+
+def graphify_environment_python(bundle: dict[str, Any]) -> Path:
+    root = graphify_environment(bundle)
+    return root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def graphify_environment_executable(bundle: dict[str, Any]) -> Path:
+    root = graphify_environment(bundle)
+    return root / ("Scripts/graphify.exe" if os.name == "nt" else "bin/graphify")
 
 
 def graphify_command(bundle: dict[str, Any]) -> list[str]:
-    del bundle
-    executable = managed_tool_executable("graphify")
-    if executable:
-        return [executable]
-    raise UpstreamError("Graphify is not on PATH. Run setup again after adding the uv or pipx tool bin directory to PATH.")
-
-
-def install_graphify(bundle: dict[str, Any], clients: list[str], dry_run: bool) -> None:
-    package = f"{bundle['package']}=={bundle['version']}"
-    uv = shutil.which("uv")
-    pipx = shutil.which("pipx")
-    if uv:
-        run([uv, "tool", "install", "--upgrade", package], dry_run=dry_run)
-    elif pipx:
-        run([pipx, "install", "--force", package], dry_run=dry_run)
-    else:
+    executable = graphify_environment_executable(bundle)
+    unsafe = False
+    for candidate in (executable, *executable.parents):
+        unsafe = unsafe or candidate.is_symlink()
+        if candidate == STATE_DIR:
+            break
+    if unsafe or not executable.is_file():
         raise UpstreamError(
-            "Graphify needs uv or pipx for an isolated install. Install one of them, then rerun setup."
+            f"Graphify is missing from its toolkit-managed environment: {executable}"
         )
+    return [str(executable)]
+
+
+def graphify_destination_roots(clients: list[str]) -> list[tuple[Path, Path]]:
+    destinations: dict[str, tuple[Path, Path]] = {}
+    for client in clients:
+        default_root = Path.home() / (".codex" if client == "codex" else ".claude")
+        configured_root = client_config_root(client)
+        for root in (default_root, configured_root):
+            destination = Path(os.path.abspath(root / "skills" / "graphify"))
+            boundary = Path(os.path.abspath(root))
+            destinations[str(destination)] = (destination, boundary)
+    return list(destinations.values())
+
+
+def previous_graphify_targets(
+    receipt: dict[str, Any] | None, clients: list[str]
+) -> set[str]:
+    if not receipt or "graphify" not in receipt.get("bundles", []):
+        return set()
+    if receipt.get("schemaVersion") == 2:
+        resolved = receipt.get("resolved", {}).get("graphify", {})
+        targets = resolved.get("targets") if isinstance(resolved, dict) else None
+        return {
+            str(Path(os.path.abspath(path)))
+            for path in targets or []
+            if isinstance(path, str)
+        }
+    prior_clients = [
+        client for client in receipt.get("clients", []) if client in {"codex", "claude"}
+    ]
+    return {str(path) for path, _ in graphify_destination_roots(prior_clients)}
+
+
+def preflight_graphify_destinations(
+    destinations: list[tuple[Path, Path]],
+    owned: set[str],
+    *,
+    adopt_existing: bool,
+    dry_run: bool,
+) -> None:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_root = STATE_DIR / "backups" / "graphify" / stamp
+    for index, (destination, boundary) in enumerate(destinations, start=1):
+        validate_skill_destination(destination, boundary)
+        if not destination.exists():
+            continue
+        if not destination.is_dir():
+            raise UpstreamError(f"Refusing non-directory Graphify destination: {destination}")
+        skill_tree_manifest(destination)
+        if str(destination) in owned:
+            continue
+        if not adopt_existing:
+            raise UpstreamError(
+                f"Refusing unmanaged Graphify skill at {destination}. "
+                "Re-run with --adopt-existing to preserve and explicitly replace it."
+            )
+        backup = backup_root / f"target-{index}" / "graphify"
+        print(f"+ preserve existing Graphify skill before adoption: {destination} -> {backup}")
+        if dry_run:
+            continue
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if backup.exists() or backup.is_symlink():
+            raise UpstreamError(f"Refusing existing Graphify backup: {backup}")
+        shutil.move(str(destination), str(backup))
+
+
+def install_graphify(
+    bundle: dict[str, Any],
+    clients: list[str],
+    dry_run: bool,
+    receipt: dict[str, Any] | None,
+    *,
+    adopt_existing: bool,
+    profile: str,
+) -> dict[str, Any]:
+    selected = clients_for(bundle, clients)
+    prior_clients = [
+        client
+        for client in (receipt or {}).get("clients", [])
+        if client in bundle.get("clients", [])
+    ]
+    managed_clients = list(dict.fromkeys(selected + prior_clients))
+    destinations = graphify_destination_roots(managed_clients)
+    preflight_graphify_destinations(
+        destinations,
+        previous_graphify_targets(receipt, managed_clients),
+        adopt_existing=adopt_existing,
+        dry_run=dry_run,
+    )
+    package = f"{bundle['package']}=={bundle['version']}"
+    environment = graphify_environment(bundle)
+    if environment.is_symlink():
+        raise UpstreamError(f"Refusing symlinked Graphify environment: {environment}")
+    environment_python = graphify_environment_python(bundle)
+    if not dry_run:
+        ensure_private_directory(environment.parent)
+        save_receipt(
+            profile,
+            managed_clients,
+            ["graphify"],
+            {
+                "graphify": {
+                    "package": bundle["package"],
+                    "version": bundle["version"],
+                    "environment": str(environment),
+                    "targets": [str(path) for path, _ in destinations],
+                    "status": "pending",
+                }
+            },
+        )
+    if not environment_python.is_file():
+        run([sys.executable, "-m", "venv", str(environment)], dry_run=dry_run)
+    run(
+        [
+            str(environment_python),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--upgrade",
+            package,
+        ],
+        dry_run=dry_run,
+    )
     command = graphify_command(bundle) if not dry_run else ["graphify"]
-    for client in clients_for(bundle, clients):
+    for client in managed_clients:
         run([*command, "install", "--platform", client], dry_run=dry_run)
         if not dry_run:
-            sync_graphify_discovery(client)
+            default = Path.home() / f".{client if client == 'codex' else 'claude'}" / "skills" / "graphify"
+            configured = client_config_root(client) / "skills" / "graphify"
+            created = configured if (configured / "SKILL.md").is_file() else default
+            created_boundary = client_config_root(client) if created == configured else default.parent.parent
+            pin_graphify_discovery(created, Path(command[0]), created_boundary)
+            if created != configured:
+                sync_graphify_discovery(client)
+            pin_graphify_discovery(
+                configured, Path(command[0]), client_config_root(client)
+            )
+    return {
+        "package": bundle["package"],
+        "version": bundle["version"],
+        "environment": str(environment),
+        "targets": [str(path) for path, _ in destinations if path.is_dir()],
+        "status": "active",
+    }
 
 
 def sync_graphify_discovery(client: str) -> None:
@@ -203,15 +382,13 @@ def sync_graphify_discovery(client: str) -> None:
         "claude": Path.home() / ".claude" / "skills" / "graphify",
     }
     configured = {
-        "codex": Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-        / "skills"
-        / "graphify",
-        "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
-        / "skills"
-        / "graphify",
+        "codex": client_config_root("codex") / "skills" / "graphify",
+        "claude": client_config_root("claude") / "skills" / "graphify",
     }
     source = defaults[client]
     target = configured[client]
+    validate_skill_destination(source, defaults[client].parent.parent)
+    validate_skill_destination(target, client_config_root(client))
     if target == source:
         return
     source_marker = source / ".graphify_version"
@@ -230,7 +407,74 @@ def sync_graphify_discovery(client: str) -> None:
     shutil.copytree(source, target, dirs_exist_ok=True)
 
 
-def doctor_graphify(bundle: dict[str, Any], clients: list[str]) -> int:
+def pin_graphify_discovery(skill: Path, executable: Path, trusted_root: Path) -> None:
+    validate_skill_destination(skill, trusted_root)
+    skill_tree_manifest(skill)
+    skill_file = skill / "SKILL.md"
+    marker = skill / ".agent-toolkit-command"
+    if not skill_file.is_file():
+        raise UpstreamError(f"Graphify did not create its expected discovery package: {skill}")
+    command = str(executable.resolve())
+    text = skill_file.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf"\n?{re.escape(GRAPHIFY_RUNTIME_BEGIN)}.*?{re.escape(GRAPHIFY_RUNTIME_END)}\n?",
+        re.DOTALL,
+    )
+    text = pattern.sub("\n", text)
+    section = (
+        f"{GRAPHIFY_RUNTIME_BEGIN}\n"
+        "## Agent Toolkit managed runtime\n\n"
+        "Use the exact managed executable below for every command in this skill. "
+        "When an example says `graphify`, substitute this absolute command; do not install another copy.\n\n"
+        f"```text\n{command}\n```\n"
+        f"{GRAPHIFY_RUNTIME_END}\n\n"
+    )
+    frontmatter_end = text.find("\n---\n", 4) if text.startswith("---\n") else -1
+    insertion = frontmatter_end + len("\n---\n") if frontmatter_end >= 0 else 0
+    updated = text[:insertion] + "\n" + section + text[insertion:].lstrip("\n")
+    skill_file.write_text(updated, encoding="utf-8")
+    marker.write_text(command + "\n", encoding="utf-8")
+
+
+def graphify_discovery_problem(skill: Path, executable: Path) -> str | None:
+    skill_file = skill / "SKILL.md"
+    marker = skill / ".agent-toolkit-command"
+    if not skill_file.is_file() or not marker.is_file():
+        return "managed discovery package or command marker is missing"
+    expected = str(executable.resolve())
+    try:
+        recorded = marker.read_text(encoding="utf-8").strip()
+        text = skill_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        return str(exc)
+    if recorded != expected or expected not in text:
+        return "managed executable is not pinned in the discovery instructions"
+    if GRAPHIFY_RUNTIME_BEGIN not in text or GRAPHIFY_RUNTIME_END not in text:
+        return "managed runtime instructions are missing"
+    return None
+
+
+def doctor_graphify(
+    bundle: dict[str, Any], clients: list[str], receipt: dict[str, Any] | None
+) -> int:
+    resolved = (receipt or {}).get("resolved", {}).get("graphify")
+    if not isinstance(resolved, dict):
+        print("FAIL upstream Graphify: install receipt is outdated; run update")
+        return 1
+    if resolved.get("status") == "pending":
+        print("FAIL upstream Graphify: interrupted refresh is pending; run update")
+        return 1
+    targets = resolved.get("targets")
+    if not isinstance(targets, list) or not all(isinstance(path, str) for path in targets):
+        print("FAIL upstream Graphify: receipt has no valid managed targets")
+        return 1
+    required_targets = {
+        str(client_config_root(client) / "skills" / "graphify")
+        for client in clients_for(bundle, clients)
+    }
+    if not required_targets.issubset(set(targets)):
+        print("FAIL upstream Graphify: selected client target is not receipted")
+        return 1
     try:
         command = graphify_command(bundle)
         version = run([*command, "--version"], capture=True)
@@ -244,19 +488,15 @@ def doctor_graphify(bundle: dict[str, Any], clients: list[str]) -> int:
         return 1
     failures = 0
     homes = {
-        "codex": Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-        / "skills"
-        / "graphify"
-        / "SKILL.md",
-        "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
-        / "skills"
-        / "graphify"
-        / "SKILL.md",
+        "codex": client_config_root("codex") / "skills" / "graphify",
+        "claude": client_config_root("claude") / "skills" / "graphify",
     }
-    generic = Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+    executable = Path(command[0])
     for client in clients_for(bundle, clients):
-        healthy = homes[client].is_file() or generic.is_file()
-        print(f"{'PASS' if healthy else 'FAIL'} upstream Graphify discovery: {client}")
+        problem = graphify_discovery_problem(homes[client], executable)
+        healthy = problem is None
+        detail = "managed command pinned" if healthy else problem
+        print(f"{'PASS' if healthy else 'FAIL'} upstream Graphify discovery: {client} ({detail})")
         failures += 0 if healthy else 1
     return failures
 
@@ -283,7 +523,7 @@ def checkout_problem(
         return "checkout has local modifications"
     head = git_value(path, "rev-parse", "HEAD")
     if expected_commit and head != expected_commit:
-        return f"HEAD {head or 'unknown'} does not match pinned commit {expected_commit}"
+        return f"HEAD {head or 'unknown'} does not match exact commit {expected_commit}"
     if tracking_ref:
         tracked = git_value(path, "rev-parse", f"refs/remotes/origin/{tracking_ref}")
         if not tracked or head != tracked:
@@ -291,58 +531,310 @@ def checkout_problem(
     return None
 
 
-def ensure_pinned_skills_checkout(bundle: dict[str, Any], dry_run: bool) -> Path:
+def ensure_tracked_skills_checkout(bundle: dict[str, Any], dry_run: bool) -> Path:
     git = shutil.which("git")
     if not git:
         raise UpstreamError("Matt Pocock's skills require Git on PATH.")
     checkout = STATE_DIR / "sources" / "matt-pocock-skills"
     repository = bundle["repository"]
-    commit = bundle["commit"]
+    ref = bundle.get("ref", "main")
     if checkout.is_symlink():
         raise UpstreamError(f"Refusing symlinked Matt Pocock skills source: {checkout}")
     if not checkout.exists():
         if not dry_run:
             ensure_private_directory(checkout.parent)
-        run([git, "clone", f"https://github.com/{repository}.git", str(checkout)], dry_run=dry_run)
+        run(
+            [
+                git,
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                ref,
+                f"https://github.com/{repository}.git",
+                str(checkout),
+            ],
+            dry_run=dry_run,
+        )
     elif not git_checkout_matches(checkout, repository):
         raise UpstreamError(f"Refusing unexpected Matt Pocock skills source at {checkout}")
     if dry_run:
-        print(f"+ pin Matt Pocock skills checkout to {commit}")
+        print(f"+ fetch the current Matt Pocock skills from origin/{ref}")
         return checkout
     if git_value(checkout, "status", "--porcelain"):
         raise UpstreamError(f"Refusing modified Matt Pocock skills checkout: {checkout}")
-    run([git, "-C", str(checkout), "fetch", "origin", commit])
-    run([git, "-C", str(checkout), "checkout", "--detach", commit])
-    problem = checkout_problem(checkout, repository, expected_commit=commit)
+    run([git, "-C", str(checkout), "fetch", "--prune", "origin", ref])
+    run([git, "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"])
+    head = git_value(checkout, "rev-parse", "HEAD")
+    fetched = git_value(checkout, "rev-parse", "FETCH_HEAD")
+    problem = checkout_problem(checkout, repository, expected_commit=fetched)
     if problem:
         raise UpstreamError(f"Matt Pocock skills source verification failed: {problem}")
+    if not head or head != fetched:
+        raise UpstreamError("Matt Pocock skills source does not exactly match the fetched commit")
     return checkout
 
 
-def install_skills_package(bundle: dict[str, Any], clients: list[str], dry_run: bool) -> None:
-    npx = shutil.which("npx")
-    if not npx:
-        raise UpstreamError("Matt Pocock's skills require Node.js with npx on PATH.")
-    agent_names = ["codex" if item == "codex" else "claude-code" for item in clients_for(bundle, clients)]
-    if not agent_names:
+def discover_skill_package(checkout: Path, bundle: dict[str, Any]) -> dict[str, str]:
+    root = checkout / bundle.get("skillRoot", "skills")
+    if root.is_symlink() or not root.is_dir():
+        raise UpstreamError(f"Matt Pocock skills root is missing or unsafe: {root}")
+    discovered: dict[str, str] = {}
+    for skill_file in sorted(root.rglob("SKILL.md")):
+        source = skill_file.parent
+        for candidate in (source, *source.parents):
+            if candidate.is_symlink():
+                raise UpstreamError(f"Matt Pocock skill path traverses a symlink: {candidate}")
+            if candidate == root:
+                break
+        name = source.name
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+            raise UpstreamError(f"Matt Pocock skill has an unsafe name: {name}")
+        if name in discovered:
+            raise UpstreamError(f"Matt Pocock skill name is duplicated: {name}")
+        skill_tree_manifest(source)
+        discovered[name] = source.relative_to(checkout).as_posix()
+    if not discovered:
+        raise UpstreamError("No Matt Pocock skills were found in the fetched source")
+    return discovered
+
+
+def validate_skill_destination(destination: Path, trusted_root: Path) -> None:
+    """Reject symlinks inside the client-owned destination boundary."""
+    reached_root = False
+    for candidate in (destination, *destination.parents):
+        if candidate.is_symlink():
+            raise UpstreamError(f"Refusing symlinked skill destination path: {candidate}")
+        if candidate == trusted_root:
+            reached_root = True
+            break
+    if not reached_root:
+        raise UpstreamError(
+            f"Skill destination is outside its configured client root: {destination}"
+        )
+
+
+def backup_and_copy_skill(
+    source: Path,
+    destination: Path,
+    backup_root: Path,
+    trusted_root: Path,
+    *,
+    managed: bool,
+    adopt_existing: bool,
+) -> None:
+    validate_skill_destination(destination, trusted_root)
+    if destination.exists():
+        if not destination.is_dir():
+            raise UpstreamError(f"Refusing non-directory skill destination: {destination}")
+        if not managed and not adopt_existing:
+            raise UpstreamError(
+                f"Refusing unmanaged skill at {destination}. "
+                "Re-run with --adopt-existing to preserve and explicitly replace it."
+            )
+        if skill_tree_problem(source, destination) is None:
+            return
+        backup = backup_root / destination.name
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if backup.exists() or backup.is_symlink():
+            raise UpstreamError(f"Refusing existing Matt Pocock skill backup: {backup}")
+        print(f"+ preserve existing skill before refresh: {destination} -> {backup}")
+        shutil.move(str(destination), str(backup))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=destination.parent, prefix=f".agent-toolkit-{destination.name}-"
+    ) as temporary:
+        staged = Path(temporary) / destination.name
+        shutil.copytree(source, staged)
+        skill_tree_manifest(staged)
+        os.replace(staged, destination)
+
+
+def skill_destination_roots(selected: list[str]) -> list[tuple[Path, Path]]:
+    roots = [(Path.home() / ".agents" / "skills", Path.home() / ".agents")]
+    if "claude" in selected:
+        claude_root = client_config_root("claude")
+        roots.append((claude_root / "skills", claude_root))
+    unique: dict[str, tuple[Path, Path]] = {}
+    for skills_root, trusted_root in roots:
+        absolute_root = Path(os.path.abspath(skills_root))
+        absolute_boundary = Path(os.path.abspath(trusted_root))
+        unique[str(absolute_root)] = (absolute_root, absolute_boundary)
+    return list(unique.values())
+
+
+def previous_skill_ownership(
+    bundle: dict[str, Any], receipt: dict[str, Any] | None, roots: list[tuple[Path, Path]]
+) -> dict[str, set[str]]:
+    ownership = {str(root): set() for root, _ in roots}
+    if not receipt or "matt-pocock-skills" not in receipt.get("bundles", []):
+        return ownership
+    if receipt.get("schemaVersion") == 2:
+        resolved = receipt.get("resolved", {}).get("matt-pocock-skills", {})
+        skills = resolved.get("skills") if isinstance(resolved, dict) else None
+        targets = resolved.get("targets") if isinstance(resolved, dict) else None
+        if isinstance(skills, dict) and isinstance(targets, list):
+            names = {name for name in skills if isinstance(name, str)}
+            recorded = {str(Path(os.path.abspath(path))) for path in targets if isinstance(path, str)}
+            pending = resolved.get("ownedByTarget") if resolved.get("status") == "pending" else None
+            for root, _ in roots:
+                if str(root) in recorded:
+                    pending_names = pending.get(str(root)) if isinstance(pending, dict) else None
+                    ownership[str(root)] = (
+                        {name for name in pending_names if isinstance(name, str)}
+                        if isinstance(pending_names, list)
+                        else set(names)
+                    )
+        return ownership
+
+    checkout = STATE_DIR / "sources" / "matt-pocock-skills"
+    if checkout_problem(checkout, bundle["repository"]):
+        return ownership
+    try:
+        names = set(discover_skill_package(checkout, bundle))
+    except UpstreamError:
+        return ownership
+    prior_clients = receipt.get("clients", [])
+    prior_roots = {str(root) for root, _ in skill_destination_roots(prior_clients)}
+    for root, _ in roots:
+        if str(root) in prior_roots:
+            ownership[str(root)] = set(names)
+    return ownership
+
+
+def archive_stale_skill(destination: Path, backup: Path, trusted_root: Path) -> None:
+    validate_skill_destination(destination, trusted_root)
+    if not destination.exists():
         return
-    checkout = ensure_pinned_skills_checkout(bundle, dry_run)
-    command = [
-        npx,
-        "--yes",
-        f"{bundle['installer']}@{bundle['installerVersion']}",
-        "add",
-        str(checkout),
-        "--global",
-        "--agent",
-        *agent_names,
-        "--skill",
-        "*",
-        "--yes",
-        "--copy",
-        "--full-depth",
-    ]
-    run(command, dry_run=dry_run)
+    if not destination.is_dir():
+        raise UpstreamError(f"Refusing non-directory managed skill destination: {destination}")
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    if backup.exists() or backup.is_symlink():
+        raise UpstreamError(f"Refusing existing retired Matt Pocock skill backup: {backup}")
+    print(f"+ archive skill removed upstream: {destination} -> {backup}")
+    shutil.move(str(destination), str(backup))
+
+
+def preflight_skill_changes(
+    roots: list[tuple[Path, Path]],
+    ownership: dict[str, set[str]],
+    current_names: set[str],
+    *,
+    adopt_existing: bool,
+) -> None:
+    for root, trusted_root in roots:
+        managed_names = ownership[str(root)]
+        for name in sorted(managed_names | current_names):
+            destination = root / name
+            validate_skill_destination(destination, trusted_root)
+            if not destination.exists():
+                continue
+            if not destination.is_dir():
+                raise UpstreamError(f"Refusing non-directory skill destination: {destination}")
+            if name in current_names and name not in managed_names and not adopt_existing:
+                raise UpstreamError(
+                    f"Refusing unmanaged skill at {destination}. "
+                    "Re-run with --adopt-existing to preserve and explicitly replace it."
+                )
+
+
+def install_skills_package(
+    bundle: dict[str, Any],
+    clients: list[str],
+    dry_run: bool,
+    receipt: dict[str, Any] | None,
+    *,
+    adopt_existing: bool,
+    profile: str,
+) -> dict[str, Any]:
+    selected = clients_for(bundle, clients)
+    if not selected:
+        return {}
+    prior_clients = (receipt or {}).get("clients", [])
+    managed_clients = list(
+        dict.fromkeys(
+            selected
+            + [
+                client
+                for client in prior_clients
+                if client in {"codex", "claude"} and client in bundle.get("clients", [])
+            ]
+        )
+    )
+    roots = skill_destination_roots(managed_clients)
+    ownership = previous_skill_ownership(bundle, receipt, roots) if not dry_run else {}
+    checkout = ensure_tracked_skills_checkout(bundle, dry_run)
+    if dry_run:
+        print("+ discover and copy every validated skill in the fetched Matt Pocock source")
+        return {
+            "repository": bundle["repository"],
+            "ref": bundle.get("ref", "main"),
+            "commit": "resolved-at-install",
+            "skills": {},
+            "targets": [],
+        }
+    skills = discover_skill_package(checkout, bundle)
+    commit = git_value(checkout, "rev-parse", "HEAD")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise UpstreamError("Matt Pocock skills checkout did not resolve to an exact Git commit")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_root = STATE_DIR / "backups" / "matt-pocock-skills" / stamp
+    current_names = set(skills)
+    preflight_skill_changes(
+        roots,
+        ownership,
+        current_names,
+        adopt_existing=adopt_existing,
+    )
+    pending_ownership = {
+        str(root): sorted(ownership[str(root)] | current_names) for root, _ in roots
+    }
+    save_receipt(
+        profile,
+        managed_clients,
+        ["matt-pocock-skills"],
+        {
+            "matt-pocock-skills": {
+                "repository": bundle["repository"],
+                "ref": bundle.get("ref", "main"),
+                "commit": commit,
+                "skills": skills,
+                "targets": [str(root) for root, _ in roots],
+                "status": "pending",
+                "ownedByTarget": pending_ownership,
+            }
+        },
+    )
+    for index, (root, trusted_root) in enumerate(roots, start=1):
+        for stale in sorted(ownership[str(root)] - current_names):
+            archive_stale_skill(
+                root / stale,
+                backup_root / f"target-{index}" / "retired" / stale,
+                trusted_root,
+            )
+    for name, relative in skills.items():
+        source = checkout / relative
+        for index, (root, trusted_root) in enumerate(roots, start=1):
+            backup_and_copy_skill(
+                source,
+                root / name,
+                backup_root / f"target-{index}" / "replaced",
+                trusted_root,
+                managed=name in ownership[str(root)],
+                adopt_existing=adopt_existing,
+            )
+    print(
+        f"= installed {len(skills)} Matt Pocock skills from {commit[:12]} for "
+        + ", ".join(selected)
+    )
+    return {
+        "repository": bundle["repository"],
+        "ref": bundle.get("ref", "main"),
+        "commit": commit,
+        "skills": skills,
+        "targets": [str(root) for root, _ in roots],
+        "status": "active",
+    }
 
 
 def skill_tree_manifest(path: Path) -> dict[str, tuple[str, str]]:
@@ -389,20 +881,62 @@ def skill_tree_problem(source: Path, installed: Path) -> str | None:
     return "; ".join(details) or "skill trees differ"
 
 
-def doctor_skills_package(bundle: dict[str, Any], clients: list[str]) -> int:
+def doctor_skills_package(
+    bundle: dict[str, Any], clients: list[str], receipt: dict[str, Any] | None
+) -> int:
+    resolved = (receipt or {}).get("resolved", {}).get("matt-pocock-skills")
+    if not isinstance(resolved, dict):
+        print("FAIL upstream Matt Pocock skills: install receipt is outdated; run update")
+        return 1
+    if resolved.get("status") == "pending":
+        print("FAIL upstream Matt Pocock skills: interrupted refresh is pending; run update")
+        return 1
+    commit = resolved.get("commit")
+    expected = resolved.get("skills")
+    targets = resolved.get("targets")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        print("FAIL upstream Matt Pocock skills: receipt has no exact source commit")
+        return 1
+    if not isinstance(expected, dict) or not expected or not all(
+        isinstance(name, str) and isinstance(relative, str)
+        for name, relative in expected.items()
+    ):
+        print("FAIL upstream Matt Pocock skills: receipt has no valid skill inventory")
+        return 1
+    if not isinstance(targets, list) or not all(isinstance(path, str) for path in targets):
+        print("FAIL upstream Matt Pocock skills: receipt has no valid managed targets")
+        return 1
+    required_targets = {
+        str(root) for root, _ in skill_destination_roots(clients_for(bundle, clients))
+    }
+    if not required_targets.issubset(set(targets)):
+        print("FAIL upstream Matt Pocock skills: selected client target is not receipted")
+        return 1
+    if resolved.get("repository") != bundle["repository"] or resolved.get("ref") != bundle.get(
+        "ref", "main"
+    ):
+        print("FAIL upstream Matt Pocock skills: receipt source identity does not match catalog")
+        return 1
     checkout = STATE_DIR / "sources" / "matt-pocock-skills"
     problem = checkout_problem(
-        checkout, bundle["repository"], expected_commit=bundle["commit"]
+        checkout, bundle["repository"], expected_commit=commit
     )
     if problem:
         print(f"FAIL upstream Matt Pocock skills source: {problem}")
         return 1
+    try:
+        discovered = discover_skill_package(checkout, bundle)
+    except UpstreamError as exc:
+        print(f"FAIL upstream Matt Pocock skills source: {exc}")
+        return 1
+    if discovered != expected:
+        print("FAIL upstream Matt Pocock skills: receipted inventory is not complete for its source commit")
+        return 1
     failures = 0
-    expected = bundle["expectedSkills"]
     canonical = Path.home() / ".agents" / "skills"
     client_roots = {
         "codex": canonical,
-        "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "skills",
+        "claude": client_config_root("claude") / "skills",
     }
     for name, relative in expected.items():
         source = checkout / relative
@@ -421,7 +955,10 @@ def doctor_skills_package(bundle: dict[str, Any], clients: list[str]) -> int:
                 )
                 failures += 1
     if not failures:
-        print(f"PASS upstream Matt Pocock skills: {len(expected)} pinned skills discovered by {', '.join(clients)}")
+        print(
+            f"PASS upstream Matt Pocock skills: {len(expected)} skills from "
+            f"{commit[:12]} discovered by {', '.join(clients)}"
+        )
     return failures
 
 
@@ -969,25 +1506,43 @@ def process_bundle(
     bundle: dict[str, Any],
     command: str,
     clients: list[str],
+    profile: str,
     dry_run: bool,
-) -> int:
+    receipt: dict[str, Any] | None,
+    adopt_existing: bool,
+) -> tuple[int, dict[str, Any] | None]:
     print(f"\n== {bundle['displayName']} ==")
     if command == "doctor":
         if bundle["kind"] == "graphify":
-            return doctor_graphify(bundle, clients)
+            return doctor_graphify(bundle, clients, receipt), None
         if bundle["kind"] == "skills-package":
-            return doctor_skills_package(bundle, clients)
+            return doctor_skills_package(bundle, clients, receipt), None
         if bundle["kind"] == "marketplace":
-            return doctor_marketplace_bundle(bundle, clients)
+            return doctor_marketplace_bundle(bundle, clients), None
         if bundle["kind"] == "codex-official":
-            return doctor_codex_official_bundle(bundle, clients)
+            return doctor_codex_official_bundle(bundle, clients), None
         if bundle["kind"] == "obscura":
-            return doctor_obscura(bundle, clients)
+            return doctor_obscura(bundle, clients), None
     update = command == "update"
+    resolved = None
     if bundle["kind"] == "graphify":
-        install_graphify(bundle, clients, dry_run)
+        resolved = install_graphify(
+            bundle,
+            clients,
+            dry_run,
+            receipt,
+            adopt_existing=adopt_existing,
+            profile=profile,
+        )
     elif bundle["kind"] == "skills-package":
-        install_skills_package(bundle, clients, dry_run)
+        resolved = install_skills_package(
+            bundle,
+            clients,
+            dry_run,
+            receipt,
+            adopt_existing=adopt_existing,
+            profile=profile,
+        )
     elif bundle["kind"] == "marketplace":
         install_marketplace_bundle(bundle, clients, dry_run, update=update)
     elif bundle["kind"] == "codex-official":
@@ -996,7 +1551,7 @@ def process_bundle(
         install_obscura(bundle, clients, dry_run, update=update)
     else:
         raise UpstreamError(f"Unsupported upstream kind for {name}: {bundle.get('kind')}")
-    return 0
+    return 0, resolved
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1005,6 +1560,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=("recommended", "skills-only", "full"), required=True)
     parser.add_argument("--clients", required=True, help="comma-separated codex,claude list")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--adopt-existing",
+        action="store_true",
+        help="preserve and replace conflicting untracked skill directories explicitly",
+    )
     return parser
 
 
@@ -1017,13 +1577,27 @@ def main() -> int:
         unknown = [name for name in names if name not in catalog]
         if unknown:
             raise UpstreamError("Profile references unknown upstream bundles: " + ", ".join(unknown))
-        failures = sum(
-            process_bundle(name, catalog[name], args.command, clients, args.dry_run) for name in names
-        )
+        receipt = load_receipt()
+        outcomes = []
+        for name in names:
+            outcome = process_bundle(
+                name,
+                catalog[name],
+                args.command,
+                clients,
+                args.profile,
+                args.dry_run,
+                receipt,
+                args.adopt_existing,
+            )
+            outcomes.append((name, outcome))
+            if args.command != "doctor" and not args.dry_run:
+                resolved = {name: outcome[1]} if isinstance(outcome[1], dict) and outcome[1] else {}
+                save_receipt(args.profile, clients, [name], resolved)
+                receipt = load_receipt()
+        failures = sum(outcome[0] for _, outcome in outcomes)
         if failures:
             raise UpstreamError(f"Upstream doctor found {failures} missing or disabled component(s)")
-        if args.command != "doctor" and not args.dry_run:
-            save_receipt(args.profile, clients, names)
         if args.command == "doctor":
             print("\nUpstream doctor passed.")
         else:

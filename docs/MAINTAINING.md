@@ -8,6 +8,10 @@ Both marketplace catalogs must list the same plugin names. Plugin versions must 
 
 Outside packages belong in `catalog/upstreams.json`, not under `plugins/`. Each upstream entry must name its original repository, distribution mechanism, license signal, supported clients, and the smallest allowlisted plugin set. Release archives also require an immutable version plus archive and executable-payload SHA-256 values for every supported platform.
 
+Matt Pocock's bundle is the deliberate exception to a fixed plugin/skill allowlist: it promises every skill on the provider's current `main`. Preserve its provider identity checks, complete-tree/link validation, exact-commit and target receipt, ownership-aware replacement, stale-skill archival, and doctor comparison together. A mutable source change requires the same fresh install/update/doctor evidence as a catalog change.
+
+The toolkit-owned plugin is governed by `catalog/personal-skills.json`. Any public-safe personal skill addition or removal must change the manifest and payload together; repository validation rejects drift.
+
 ## Adding a plugin
 
 1. Scaffold the Codex package with the system plugin creator into `plugins/` and the repository marketplace.
@@ -39,7 +43,7 @@ The root README is the first-time-user path; detailed setup and recovery guidanc
 
 - Preserve editable SVG sources and require a `viewBox`, accessible title, and inspected render.
 - Keep raster assets below practical repository-review sizes and free of text, logos, private data, and unverifiable UI claims.
-- Keep `bin/setup` and `bin/setup.ps1` thin: they may fetch a clean managed checkout and delegate lifecycle behavior, but must not reset, clean, or silently overwrite one.
+- Keep `bin/setup` and `bin/setup.ps1` thin: they may assist with Git/Python through a recognized OS package manager, fetch a clean managed checkout, choose install versus refresh, and delegate lifecycle behavior. They must print prerequisite changes and must not reset, clean, or silently overwrite a checkout.
 - Run `python bin/agent-kit validate`; it checks local public links, SVG structure, and launcher presence in addition to plugin packaging.
 
 ## Stable preview promotion checklist

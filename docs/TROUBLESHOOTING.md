@@ -15,16 +15,22 @@ claude --version
 
 Install at least one supported client and ensure its executable is on `PATH`, then rerun setup. You can also target one explicitly with `--clients codex` or `--clients claude`.
 
-## Graphify or Matt Pocock prerequisites are missing
+## Git or Python could not be installed
 
-The complete profiles need both commands:
+The one-line launcher attempts to install missing Git and Python through a supported package manager. If it cannot, check which tools are available:
 
 ```bash
-uv --version
-npx --version
+git --version
+python3 --version
 ```
 
-Install [`uv`](https://docs.astral.sh/uv/) and a current Node.js release, then rerun setup. If you want only the repository-owned workflows for now:
+Install Git and Python 3.10 or newer with your operating system's package manager, then rerun the exact same setup command. On Debian or Ubuntu, include the venv package:
+
+```bash
+sudo apt-get install git python3 python3-venv
+```
+
+If you want only the repository-owned workflows for now:
 
 ```bash
 ./bin/agent-kit install --core-only --no-guidance
@@ -74,15 +80,27 @@ The candidate could not install in a disposable Codex home, so the active plugin
 
 Resolve the manifest, marketplace, Python, or network error before retrying.
 
-## Graphify installs but is not found
+## Graphify installation fails
 
-Graphify's package name is `graphifyy`, while its command is `graphify`. When `uv` installed it, run:
+Graphify's package name is `graphifyy`, while its command is `graphify`. Agent Toolkit installs it into `~/.agent-toolkit/tools/graphify/<version>/`; it does not trust an unrelated `graphify` executable on `PATH`. The generated Graphify skill names that exact managed executable, and `doctor` fails if the instruction or command marker drifts.
+
+Check whether your Python can create isolated environments:
 
 ```bash
-uv tool update-shell
+python3 -m venv /tmp/agent-toolkit-venv-check
 ```
 
-Open a new terminal and rerun `agent-kit doctor`. The installer can invoke Graphify through `uv` during setup, but future interactive sessions still benefit from having the tool directory on `PATH`.
+If that fails on Debian or Ubuntu, install `python3-venv`. Then rerun the original one-line setup command and `agent-kit doctor`.
+
+## Matt Pocock skills do not match
+
+Every install/update fetches the current upstream `main`, records its exact commit, and byte-checks all discovered skill trees. Run the explicit refresh to repair ordinary drift:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- update
+```
+
+An existing skill directory without a matching toolkit receipt is left untouched and stops setup. If you explicitly intend to replace it, rerun with `--adopt-existing`; setup first preserves that copy under `~/.agent-toolkit/backups/matt-pocock-skills/`. It refuses symlinked destinations or a modified managed source checkout; inspect those paths instead of deleting them blindly. Receipt-owned skills removed from Matt's current branch are archived under the same backup root during update.
 
 ## Obscura download or checksum fails
 
@@ -96,7 +114,9 @@ Agent Toolkit installs plugin code but never copies provider authentication. Com
 
 ## Setup was interrupted
 
-Rerun the same install command. The receipt records a pending client before setup creates its marketplace, then records plugin ownership before native installation. You may also run uninstall to remove a receipt-owned partial installation. Uninstall checkpoints each completed client, so rerunning it continues after an earlier client-specific failure.
+Rerun the same install command. The receipt records pending ownership before changing native plugins, Graphify discovery, or Matt Pocock skill trees, so the same command can safely complete a partial refresh. You may also run uninstall to remove a receipt-owned partial installation. Uninstall checkpoints each completed client, so rerunning it continues after an earlier client-specific failure.
+
+If setup rejects `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, give it a non-empty absolute directory below your user profile. Relative paths and filesystem roots such as `/` or a Windows drive root are refused before any client files are changed.
 
 ## Native validation is skipped
 

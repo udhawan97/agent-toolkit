@@ -8,8 +8,8 @@ The machine-readable allowlist is [`catalog/upstreams.json`](../catalog/upstream
 
 | Bundle | Original source | Distribution | License signal | Clients |
 | --- | --- | --- | --- | --- |
-| Graphify | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) | PyPI package `graphifyy`, installed in an isolated `uv` or `pipx` tool environment | Apache-2.0 | Codex + Claude |
-| Matt Pocock's Skills | [mattpocock/skills](https://github.com/mattpocock/skills) | Pinned source commit; `skills` CLI 1.5.23; 37 copied skills | MIT | Codex + Claude |
+| Graphify | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) | Version-pinned PyPI package `graphifyy`, installed in a toolkit-managed Python environment | Apache-2.0 | Codex + Claude |
+| Matt Pocock's Skills | [mattpocock/skills](https://github.com/mattpocock/skills) | Current upstream `main`; every discovered skill is validated and copied; exact commit, inventory, and targets are receipted | MIT | Codex + Claude |
 | Diagram Design | [cathrynlavery/diagram-design](https://github.com/cathrynlavery/diagram-design) | Native plugin marketplace | MIT | Codex + Claude |
 | Ponytail | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | Native plugin marketplace | MIT | Codex + Claude |
 | Understand Anything | [Egonex-AI/Understand-Anything](https://github.com/Egonex-AI/Understand-Anything) | Native plugin marketplace | MIT | Codex + Claude |
@@ -63,13 +63,15 @@ The list mixes first-party and curated partner work; marketplace placement is no
 `agent-kit update` performs the following:
 
 1. Refreshes Agent Toolkit's own `stable` source and native marketplace.
-2. Upgrades Graphify through its isolated Python tool manager.
-3. Reinstalls Matt Pocock's 37 allowlisted skills from the catalog-pinned commit with the catalog-pinned `skills` CLI.
+2. Upgrades Graphify inside the toolkit-managed isolated Python environment, pins that exact executable in each generated client skill, and verifies the command can be discovered from those instructions.
+3. Fetches Matt Pocock's current upstream `main`, checks out the exact fetched commit, validates every complete skill tree, installs every discovered skill for the selected clients, archives receipt-owned skills removed upstream, and records the resolved commit, inventory, and targets in `~/.agent-toolkit/upstreams.json`.
 4. Refreshes each registered native plugin marketplace and fast-forwards the verified OpenAI fallback checkout when that adapter is in use.
-5. Runs Claude's native plugin updater where available; Codex uses its refreshed marketplace-backed installation.
+5. Reinstalls the toolkit-owned, receipted personal workflow plugin from the refreshed marketplace source in both clients. Claude keeps plugin data during replacement.
 6. Rechecks the pinned Obscura archive and repairs toolkit-managed MCP registrations when its catalog version changes.
 
-The allowlist points at named upstream branches for marketplace packages so updates can follow provider releases. That is convenient but means an update is also a trust decision. Review the upstream diff or use `--core-only` when you need a frozen, repository-only setup.
+The allowlist points at named upstream branches for marketplace packages and Matt Pocock's skill source so updates can follow provider releases. That is convenient but means an update is also a trust decision. Matt's current branch is mutable by design; `doctor` proves the installed trees still match the exact commit recorded at install/update time, not that upstream has remained unchanged. Review the upstream diff or use `--core-only` when you need a frozen, repository-only setup.
+
+If a destination skill already exists without a toolkit ownership receipt, setup refuses to touch it. Use `--adopt-existing` only when you intend to replace it. If its contents differ, the existing tree is preserved under `~/.agent-toolkit/backups/matt-pocock-skills/` before replacement; a byte-identical tree is retained in place. Receipt-owned skills removed from Matt's current branch are also archived there instead of being left agent-visible. Symlinked or otherwise unsafe skill trees are always refused.
 
 ## Removal behavior
 

@@ -2,6 +2,13 @@
 
 ## 0.2.0 - Unreleased
 
+- Reduced the fast path to one repeatable command: first run installs, later healthy runs refresh, and supported OS package managers can supply missing Git/Python prerequisites.
+- Removed Node.js/`npx`, `uv`, and `pipx` as user prerequisites by copying validated Matt Pocock skill trees directly and managing Graphify in a toolkit-owned Python environment.
+- Changed Matt Pocock's bundle to fetch every current upstream skill on each install/update, record the exact resolved commit, inventory, and targets, checkpoint ownership for interruption recovery, refresh every receipted client target, archive receipt-owned skills removed upstream, refuse unmanaged conflicts by default, and preserve changed adopted copies before replacement.
+- Added equivalent ownership and symlink preflights for Graphify discovery, plus safe absolute-root validation for client configuration overrides.
+- Changed toolkit-owned workflow refreshes to reinstall the receipted plugin from the current marketplace source in both clients, retaining Claude plugin data, so same-version source updates cannot leave personal skills stale.
+- Pinned Graphify's toolkit-managed executable into each generated client skill and made `doctor` verify the real invocation instructions.
+- Added automatic second-client reconciliation, Python `venv` prerequisite checks, a final one-line health check, and a validated public-personal skill manifest.
 - Added an allowlisted upstream catalog for Graphify, Matt Pocock's skills, Diagram Design, Ponytail, Understand Anything, official OpenAI packages, Anthropic-authored essentials, attributed partner packages, and Obscura.
 - Added one-step upstream install, update, and doctor orchestration without vendoring third-party or provider payloads.
 - Added traversal-safe Obscura installation with archive, executable, and worker checksums plus exact local stdio MCP registration checks.

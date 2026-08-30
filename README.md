@@ -2,7 +2,7 @@
   <img src="assets/brand/mark.svg" width="112" alt="Agent Toolkit logo">
   <h1>Agent Toolkit</h1>
   <p><strong>One command. One shared setup. Codex and Claude Code.</strong></p>
-  <p>Install a polished, public-safe agent stack without copying credentials, private memories, personal paths, or private project rules.</p>
+  <p>Bring a complete, public-safe agent setup to a new machine—without manually installing Node, uv, plugins, skills, adapters, or MCP wiring.</p>
   <p>
     <a href="#install"><strong>Install</strong></a>
     · <a href="#what-you-get">What you get</a>
@@ -11,7 +11,7 @@
   </p>
   <p>
     <a href="https://github.com/udhawan97/agent-toolkit/actions/workflows/validate.yml"><img alt="Validation status" src="https://github.com/udhawan97/agent-toolkit/actions/workflows/validate.yml/badge.svg?branch=stable"></a>
-    <img alt="Python 3.10 or newer" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&amp;logoColor=white">
+    <img alt="Prerequisites assisted" src="https://img.shields.io/badge/prerequisites-assisted-23B8A6">
     <img alt="Codex and Claude Code" src="https://img.shields.io/badge/agents-Codex%20%2B%20Claude%20Code-6C63FF">
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/toolkit-MIT-F5C36A"></a>
   </p>
@@ -34,23 +34,27 @@ irm https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup.p
 > [!NOTE]
 > The full native install/update/doctor/uninstall journey is validated on macOS. Linux and Windows run repository and launcher checks in CI; their complete native-client lifecycle is still pending validation.
 
-That is the complete setup. It detects Codex and/or Claude Code, installs the matching packages, merges a sanitized working agreement, and writes local receipts for later checks.
+That is the complete setup. It detects Codex, Claude Code, or both; installs every matching layer; and verifies what it installed. Run the same command later to update everything.
+
+### What you need first
+
+Have **Codex CLI, Claude Code, or both** installed. On macOS/Linux, the copy-paste command also uses the system's `curl` and POSIX shell. The launcher handles the remaining setup where a supported package manager is already available:
+
+- installs missing Git and Python 3.10+ with `venv` support through Homebrew, `apt`, `dnf`, `pacman`, `apk`, `zypper`, or Windows `winget` when available;
+- creates its own isolated Python environment for Graphify;
+- fetches the latest reviewed toolkit-owned skills from `stable`;
+- fetches **every current skill** from Matt Pocock's upstream `main` branch and records the exact commit it received;
+- connects the right plugins, adapters, guidance, and Obscura MCP registration for whichever clients it detects.
+
+No Node.js, `npx`, `uv`, or `pipx` setup is required.
+
+On macOS, automatic Git/Python installation uses an existing Homebrew installation. If Homebrew is unavailable, setup stops with the exact manual prerequisite instead of changing the machine unexpectedly.
 
 > [!IMPORTANT]
 > Nothing runs when you clone or download this repository. Setup starts only when you run it. The default profile fetches allowlisted packages from their original providers; review the readable [source ledger](docs/UPSTREAMS.md) first if you prefer.
 
-<details>
-<summary><strong>Prerequisites</strong></summary>
-
-- Git
-- Python 3.10+
-- Codex CLI, Claude Code, or both
-- [`uv`](https://docs.astral.sh/uv/) for Graphify’s isolated Python tool install
-- Node.js with `npx` for Matt Pocock’s cross-agent skills installer
-
-Setup checks these before changing client state. Provider logins remain separate and happen only when a provider plugin actually needs them.
-
-</details>
+> [!TIP]
+> Prefer to manage system packages yourself? Set `AGENT_KIT_AUTO_PREREQS=0`. Provider logins still remain separate and happen only when a provider plugin needs them.
 
 <details>
 <summary><strong>Inspect before running</strong></summary>
@@ -74,8 +78,8 @@ A downloaded [stable ZIP](https://github.com/udhawan97/agent-toolkit/archive/ref
 ```text
 Your command
    │
-   ├── Toolkit-owned workflows ── evidence audits + council review
-   ├── Trusted upstream skills ── Graphify + Matt Pocock + visual/code tools
+   ├── Personal workflows ─────── every public-safe skill in this toolkit
+   ├── Current upstream skills ── Graphify + all current Matt Pocock skills
    ├── Provider essentials ────── official OpenAI + Anthropic marketplaces
    ├── Local browser tool ─────── verified Obscura payload + exact MCP registration
    └── Shared guidance ────────── sanitized CLAUDE.md + AGENTS.md blocks
@@ -83,7 +87,7 @@ Your command
 
 ### Toolkit-owned workflows
 
-These are the only skills copied from this repository:
+These are every personally created skill currently cleared for public redistribution in this repository. The reviewed [`catalog/personal-skills.json`](catalog/personal-skills.json) manifest must exactly match the plugin payload, so additions cannot be documented without being installed—or installed without being declared. Private, project-specific, account-bound, duplicate, and third-party skills stay out of the public package.
 
 | Skill | Use it for |
 | --- | --- |
@@ -98,7 +102,7 @@ Outside packages are installed from their original repositories or official mark
 | Layer | Included by the default profile |
 | --- | --- |
 | Codebase understanding | Graphify and Understand Anything |
-| Planning and delivery | 37 Matt Pocock skills from a reviewed commit, installed for both clients |
+| Planning and delivery | Every skill currently published on Matt Pocock's upstream `main`; the resolved commit and complete inventory are recorded locally |
 | Design communication | Diagram Design |
 | Simpler implementation | Ponytail |
 | Browser work | Obscura MCP, with archive, executable, worker, and registration checks |
@@ -153,12 +157,14 @@ Both audit skills begin read-only. Implementation, push, release, deployment, an
 
 ## How it stays maintainable
 
+![One repeatable command prepares prerequisites, detects clients, installs, verifies, and refreshes the setup](assets/diagrams/lifecycle.svg)
+
 ![One canonical repository exposes owned workflows and an allowlisted upstream catalog through native client paths](assets/diagrams/architecture.svg)
 
 | Command | What it does |
 | --- | --- |
-| `install` | Installs the selected profile and merges managed guidance. |
-| `update` | Fast-forwards the managed source, refreshes native marketplaces, and reruns official upstream updaters. |
+| same one-line command | Installs on a new machine; refreshes an existing installation, adds a newly detected second client using the saved profile, then runs `doctor`. |
+| `update` | Explicit form of the refresh: fast-forwards the toolkit, reinstalls its receipted personal workflows from that source, fetches Matt's current branch, and updates native marketplaces. |
 | `doctor` | Checks owned plugins, upstream skills/tools, MCP registration, and enabled state. |
 | `uninstall` | Removes receipt-owned Agent Toolkit plugins and optionally its guidance block. |
 
@@ -166,6 +172,8 @@ Both audit skills begin read-only. Implementation, push, release, deployment, an
 > Third-party and provider packages remain owned by their original package managers. Agent Toolkit updates and verifies them, but deliberately does not mass-delete them during uninstall. This avoids removing tools another setup may also use.
 
 ### Update
+
+Rerun the original install command, or use the explicit form:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- update
@@ -193,6 +201,8 @@ PowerShell accepts the same arguments through a downloaded script block; the [ge
 | --- | --- |
 | Published toolkit | The sanitized public root and its reachable history contain no credentials, memories, personal paths, real names, account data, or private project rules. |
 | Third-party code | Fetched from the source listed in `catalog/upstreams.json`; not vendored into this repository. |
+| Matt Pocock skills | Every install/update fetches current `main`, validates each complete skill tree, records the exact commit, inventory, and targets, and archives receipt-owned skills removed upstream. Unmanaged conflicts are refused unless you explicitly use `--adopt-existing`; adopted copies are backed up before replacement. |
+| Graphify | Installed in a toolkit-managed virtual environment; every generated client skill pins the exact executable and `doctor` verifies that invocation contract. |
 | Obscura | Platform archive, executable, and worker are pinned and SHA-256 verified; MCP commands must match exactly. |
 | Guidance | Added as a marked block; existing content is retained and backed up. |
 | Core ownership | Receipt-controlled; setup refuses ambiguous marketplace or plugin ownership. |
