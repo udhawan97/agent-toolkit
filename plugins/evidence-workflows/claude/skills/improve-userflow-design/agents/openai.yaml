@@ -1,0 +1,6 @@
+interface:
+  display_name: "Improve User Flow Design"
+  short_description: "Audit real journeys, design craft, and UI fixes"
+  default_prompt: "Use $improve-userflow-design to audit [flow, surface, or scope] on the real product, including product-specific design craft, and produce an offline, evidence-led HTML report. Preserve proven strengths and do not change application code unless I explicitly ask you to implement selected gaps."
+policy:
+  allow_implicit_invocation: false

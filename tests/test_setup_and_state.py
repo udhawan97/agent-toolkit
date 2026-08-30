@@ -254,6 +254,89 @@ class UpstreamSafetyTests(unittest.TestCase):
         plugin = ROOT / "plugins" / catalog["plugin"] / "skills"
         packaged = {path.parent.name for path in plugin.glob("*/SKILL.md")}
         self.assertEqual(set(catalog["skills"]), packaged)
+        claude = ROOT / "plugins" / catalog["plugin"] / "claude" / "skills"
+        adapted = {path.parent.name for path in claude.glob("*/SKILL.md")}
+        self.assertEqual(set(catalog["skills"]), adapted)
+
+    def test_explicit_only_skills_use_native_guards_in_both_clients(self) -> None:
+        plugin = ROOT / "plugins" / "evidence-workflows"
+        for name in ("dev-review", "improve-userflow-design", "tech-debt"):
+            codex = (plugin / "skills" / name / "agents" / "openai.yaml").read_text(
+                encoding="utf-8"
+            )
+            claude = (plugin / "claude" / "skills" / name / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("allow_implicit_invocation: false", codex)
+            self.assertIn("disable-model-invocation: true", claude)
+
+    def test_dev_review_packaged_validators_and_ledger_self_tests_pass(self) -> None:
+        plugin = ROOT / "plugins" / "evidence-workflows"
+        for skill_root in (
+            plugin / "skills" / "dev-review",
+            plugin / "claude" / "skills" / "dev-review",
+        ):
+            imported = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        f"import sys; sys.path.insert(0, "
+                        f"{str(skill_root / 'scripts')!r}); import review_ledger"
+                    ),
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(imported.returncode, 0, imported.stdout + imported.stderr)
+            completed = subprocess.run(
+                [sys.executable, str(skill_root / "scripts" / "validate_skill.py")],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertIn("ledger self-test", completed.stdout)
+            authored_cache_file = skill_root / "scripts" / "__pycache__" / "authored.txt"
+            authored_cache_file.write_text("must not be hidden\n", encoding="utf-8")
+            rejected = subprocess.run(
+                [sys.executable, str(skill_root / "scripts" / "validate_skill.py")],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            authored_cache_file.unlink()
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("unexpected file", rejected.stdout + rejected.stderr)
+        canonical_cache_file = (
+            plugin / "skills" / "dev-review" / "scripts" / "__pycache__" / "authored.txt"
+        )
+        canonical_cache_file.write_text("must not be hidden\n", encoding="utf-8")
+        rejected_repository = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "agent-kit"), "validate"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        canonical_cache_file.unlink()
+        self.assertNotEqual(rejected_repository.returncode, 0)
+        self.assertIn("payload", rejected_repository.stdout + rejected_repository.stderr)
+        repository_validation = subprocess.run(
+            [sys.executable, str(ROOT / "bin" / "agent-kit"), "validate"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        self.assertEqual(
+            repository_validation.returncode,
+            0,
+            repository_validation.stdout + repository_validation.stderr,
+        )
 
     def test_obscura_allowlist_has_strong_digests(self) -> None:
         catalog = json.loads((ROOT / "catalog" / "upstreams.json").read_text(encoding="utf-8"))

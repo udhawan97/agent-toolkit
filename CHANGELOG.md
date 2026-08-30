@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- Added the explicit-only `dev-review` workflow: one senior owner coordinates exactly three specialist developers across code, architecture, real user journeys, design craft, correctness, security, reliability, accessibility, performance, and delivery; produces a scored offline report with separate coverage confidence; and implements only run-bound findings selected by the user.
+- Added an owner-only, resumable review ledger with stable run-bound finding IDs, schema validation, atomic writes, writer locking, compare-and-swap updates, evidence/report digests, and research handoff state.
+- Kept audit, implementation, merge, push, release, deployment, live egress, and production mutations as separate authority boundaries.
+
 ## 0.2.0 - Unreleased
 
 - Reduced the fast path to one repeatable command: first run installs, later healthy runs refresh, and supported OS package managers can supply missing Git/Python prerequisites.

@@ -2,7 +2,7 @@
 
 ## Package contract
 
-Each folder under `plugins/` is one self-contained package. It carries both `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`, while its `skills/` directory is the canonical shared payload. Never make a packaged skill reach into a sibling plugin or a developer home directory.
+Each folder under `plugins/` is one self-contained package. It carries both `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`. Its `skills/` directory is the canonical Codex and portable source payload; its `claude/` adapter mirrors the same skill trees and may add only Claude-native invocation-control frontmatter. Never make a packaged skill reach into a sibling plugin or a developer home directory.
 
 Both marketplace catalogs must list the same plugin names. Plugin versions must match across both manifests and the Claude marketplace entry. Release plugin changes with strict semantic versions.
 
@@ -16,7 +16,7 @@ The toolkit-owned plugin is governed by `catalog/personal-skills.json`. Any publ
 
 1. Scaffold the Codex package with the system plugin creator into `plugins/` and the repository marketplace.
 2. Add the matching Claude manifest and marketplace entry.
-3. Restrict shared skill frontmatter to the portable Agent Skills fields.
+3. Restrict canonical skill frontmatter to portable Agent Skills fields. Mirror the tree into the Claude adapter, adding only required Claude-native invocation-control frontmatter, and validate both payloads for drift.
 4. Add the plugin to one or more profiles.
 5. Run `./bin/agent-kit validate --native`.
 6. Test a local installation with isolated client homes before updating the changelog.

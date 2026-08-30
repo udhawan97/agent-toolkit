@@ -1,22 +1,23 @@
 {
   "name": "evidence-workflows",
-  "version": "0.2.0",
-  "description": "Evidence-led user-flow and technical-debt audits with a two-round review gate.",
+  "version": "0.3.0",
+  "description": "Evidence-led product, codebase, architecture, and production reviews with independent gates.",
   "author": {"name": "Agent Toolkit contributors"},
   "repository": "https://github.com/udhawan97/agent-toolkit",
   "license": "MIT",
-  "keywords": ["audit", "evidence", "technical-debt", "user-flow"],
+  "keywords": ["architecture", "audit", "code-review", "evidence", "production", "user-flow"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Evidence Workflows",
-    "shortDescription": "Trace product friction to evidence and root causes.",
-    "longDescription": "Audit real user journeys, connect findings to reproducible evidence and stack causes, and review substantive results before delivery.",
+    "shortDescription": "Review products and codebases through evidence and gates.",
+    "longDescription": "Audit real user journeys, codebase architecture, technical debt, and production readiness; coordinate independent specialists; and review substantive results before delivery.",
     "developerName": "Agent Toolkit contributors",
     "category": "Productivity",
     "capabilities": ["Analysis", "Write"],
     "websiteURL": "https://github.com/udhawan97/agent-toolkit",
     "defaultPrompt": [
       "Audit a user flow without changing application code.",
+      "Run a senior production review with three specialist developers.",
       "Trace technical debt to a real user consequence.",
       "Review material findings through the council gate."
     ]

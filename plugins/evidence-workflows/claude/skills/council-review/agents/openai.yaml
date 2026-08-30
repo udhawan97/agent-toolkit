@@ -1,0 +1,4 @@
+interface:
+  display_name: "Council Review"
+  short_description: "Run two rounds of four-reviewer quality gates"
+  default_prompt: "Use $council-review to review my material findings and proposed final result through the mandatory two-round council gate."

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Review"
+  short_description: "Senior code, UX, architecture, and production review"
+  default_prompt: "Use $dev-review to audit this repository like a production-bound change, coordinate three specialist developers, and produce a scored offline report before asking which findings to implement."
+policy:
+  allow_implicit_invocation: false

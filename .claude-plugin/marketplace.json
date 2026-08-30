@@ -7,11 +7,11 @@
   "plugins": [
     {
       "name": "evidence-workflows",
-      "source": "./plugins/evidence-workflows",
-      "description": "Audit real user journeys and trace findings to evidence and root causes.",
-      "version": "0.2.0",
+      "source": "./plugins/evidence-workflows/claude",
+      "description": "Audit products and codebases with evidence, specialist developers, and production gates.",
+      "version": "0.3.0",
       "category": "development",
-      "tags": ["audit", "evidence", "technical-debt", "user-flow"]
+      "tags": ["architecture", "audit", "code-review", "evidence", "production", "user-flow"]
     }
   ]
 }

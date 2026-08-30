@@ -544,6 +544,80 @@ def validate_frontmatter(skill: Path, errors: list[str]) -> None:
             errors.append(f"broken relative link in {skill.relative_to(ROOT)}: {target}")
 
 
+def split_skill_document(skill: Path) -> tuple[dict[str, str], str] | None:
+    text = skill.read_text(encoding="utf-8")
+    match = re.match(r"^---\n(.*?)\n---(?:\n|$)", text, re.DOTALL)
+    if not match:
+        return None
+    values: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if not line or line.startswith((" ", "\t", "#")) or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        values[key] = value.strip()
+    return values, text[match.end() :]
+
+
+def validate_claude_adapter(
+    canonical_root: Path, adapter_root: Path, errors: list[str]
+) -> None:
+    if not adapter_root.is_dir():
+        errors.append(f"Claude skill adapter is missing: {adapter_root.relative_to(ROOT)}")
+        return
+    canonical_files = {
+        path.relative_to(canonical_root): path
+        for path in canonical_root.rglob("*")
+        if path.is_file()
+        and not (
+            "__pycache__" in path.relative_to(canonical_root).parts
+            and path.suffix == ".pyc"
+        )
+    }
+    adapted_files = {
+        path.relative_to(adapter_root): path
+        for path in adapter_root.rglob("*")
+        if path.is_file()
+        and not (
+            "__pycache__" in path.relative_to(adapter_root).parts
+            and path.suffix == ".pyc"
+        )
+    }
+    if set(canonical_files) != set(adapted_files):
+        errors.append("Codex and Claude skill payloads must expose the same files")
+        return
+    for relative in sorted(canonical_files):
+        canonical = canonical_files[relative]
+        adapted = adapted_files[relative]
+        if relative.name != "SKILL.md":
+            if canonical.read_bytes() != adapted.read_bytes():
+                errors.append(f"Claude adapter payload drift: {relative}")
+            continue
+        canonical_document = split_skill_document(canonical)
+        adapted_document = split_skill_document(adapted)
+        if canonical_document is None or adapted_document is None:
+            errors.append(f"invalid Claude adapter frontmatter: {relative}")
+            continue
+        canonical_frontmatter, canonical_body = canonical_document
+        adapted_frontmatter, adapted_body = adapted_document
+        invocation_value = adapted_frontmatter.pop("disable-model-invocation", None)
+        if canonical_frontmatter != adapted_frontmatter:
+            errors.append(f"Claude adapter frontmatter differs beyond invocation control: {relative}")
+        if canonical_body != adapted_body:
+            errors.append(f"Claude adapter body differs from canonical payload: {relative}")
+        codex_metadata = canonical.parent / "agents" / "openai.yaml"
+        codex_explicit = codex_metadata.is_file() and bool(
+            re.search(
+                r"^\s*allow_implicit_invocation:\s*false\s*$",
+                codex_metadata.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+        )
+        if codex_explicit and invocation_value != "true":
+            errors.append(f"explicit-only skill lacks Claude invocation guard: {relative}")
+        if not codex_explicit and invocation_value is not None:
+            errors.append(f"Claude invocation guard has no canonical Codex counterpart: {relative}")
+
+
 def validate_public_surface(errors: list[str]) -> None:
     markdown_files = [ROOT / "README.md", *(ROOT / "docs").glob("*.md")]
     for document in markdown_files:
@@ -614,25 +688,32 @@ def validate_repo(native: bool = False) -> None:
     for plugin_dir in plugin_dirs:
         name = plugin_dir.name
         codex_manifest = load_json(plugin_dir / ".codex-plugin" / "plugin.json")
-        claude_manifest = load_json(plugin_dir / ".claude-plugin" / "plugin.json")
+        claude_adapter = plugin_dir / "claude"
+        claude_manifest = load_json(claude_adapter / ".claude-plugin" / "plugin.json")
+        canonical_claude_manifest = load_json(plugin_dir / ".claude-plugin" / "plugin.json")
         versions = {
             codex_manifest.get("version"),
             claude_manifest.get("version"),
             claude_entries.get(name, {}).get("version"),
         }
-        if codex_manifest.get("name") != name or claude_manifest.get("name") != name:
+        if (
+            codex_manifest.get("name") != name
+            or claude_manifest.get("name") != name
+            or canonical_claude_manifest != claude_manifest
+        ):
             errors.append(f"plugin folder and manifest names differ: {name}")
         if len(versions) != 1 or not re.fullmatch(r"\d+\.\d+\.\d+", str(next(iter(versions)))):
             errors.append(f"plugin versions are not matching strict semver: {name}")
         if codex_entries.get(name, {}).get("source", {}).get("path") != f"./plugins/{name}":
             errors.append(f"Codex marketplace source is wrong: {name}")
-        if claude_entries.get(name, {}).get("source") != f"./plugins/{name}":
+        if claude_entries.get(name, {}).get("source") != f"./plugins/{name}/claude":
             errors.append(f"Claude marketplace source is wrong: {name}")
         skills = sorted((plugin_dir / "skills").glob("*/SKILL.md"))
         if not skills:
             errors.append(f"plugin has no skills: {name}")
         for skill in skills:
             validate_frontmatter(skill, errors)
+        validate_claude_adapter(plugin_dir / "skills", claude_adapter / "skills", errors)
     personal_catalog = load_json(ROOT / "catalog" / "personal-skills.json")
     if not isinstance(personal_catalog, dict):
         personal_catalog = {}
@@ -720,7 +801,7 @@ def validate_repo(native: bool = False) -> None:
         if shutil.which("claude"):
             run(["claude", "plugin", "validate", str(ROOT)])
             for plugin_dir in plugin_dirs:
-                run(["claude", "plugin", "validate", str(plugin_dir)])
+                run(["claude", "plugin", "validate", str(plugin_dir / "claude")])
             print("PASS native Claude marketplace and plugin validation")
         else:
             print("SKIP native Claude validation: claude is not available on PATH")

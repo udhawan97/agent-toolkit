@@ -1,0 +1,6 @@
+interface:
+  display_name: "Tech Debt"
+  short_description: "Trace stack debt to real user-flow friction"
+  default_prompt: "Use $tech-debt to audit how the current stack affects [flow or surface], separate observed friction from causal certainty, and produce an offline evidence report without changing application code."
+policy:
+  allow_implicit_invocation: false

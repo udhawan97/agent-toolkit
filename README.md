@@ -91,6 +91,7 @@ These are every personally created skill currently cleared for public redistribu
 
 | Skill | Use it for |
 | --- | --- |
+| `dev-review` | Run a friendly senior production review with three specialist developers, a scored offline report, and approval-gated fixes. |
 | `tech-debt` | Trace architecture or stack debt to a real user consequence. |
 | `improve-userflow-design` | Audit complete journeys and improve only selected gaps. |
 | `council-review` | Challenge material findings through a two-round evidence gate. |
@@ -127,7 +128,7 @@ The block covers concise communication, authority boundaries, browser routing, S
 | `recommended` | Most people | The complete public-safe stack shown above |
 | `skills-only` | No provider plugins or MCP | Owned workflows, Graphify, and Matt Pocock’s skills |
 | `full` | Automation that wants an explicit “everything” name | Same complete allowlist as `recommended` |
-| `--core-only` | Minimal or offline review | Only the three toolkit-owned workflows |
+| `--core-only` | Minimal or offline review | Only the four toolkit-owned workflows |
 
 Examples:
 
@@ -144,16 +145,24 @@ Restart active client sessions after setup.
 **Codex**
 
 ```text
+Use $dev-review to audit this repository for production readiness. Audit only.
+```
+
+```text
 Use $tech-debt to audit how this stack affects the checkout journey. Audit only.
 ```
 
 **Claude Code**
 
 ```text
+/evidence-workflows:dev-review Audit this repository for production readiness. Audit only.
+```
+
+```text
 /evidence-workflows:tech-debt Audit how this stack affects the checkout journey. Audit only.
 ```
 
-Both audit skills begin read-only. Implementation, push, release, deployment, and publication remain separate decisions.
+The audit workflows begin read-only. Implementation, push, release, deployment, and publication remain separate decisions.
 
 ## How it stays maintainable
 
