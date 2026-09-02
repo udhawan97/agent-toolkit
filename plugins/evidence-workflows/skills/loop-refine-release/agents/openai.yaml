@@ -1,0 +1,7 @@
+interface:
+  display_name: "Loop Refine Release"
+  short_description: "Implement, double-audit, document, and merge locally"
+  default_prompt: "Use $loop-refine-release in [repository] to implement [concrete proposed solution], run the two-pass user-flow and architecture verification, synchronize affected public docs, pass the required councils, and merge the exact reviewed tree into [local base branch]. If a target is missing, ask before editing."
+
+policy:
+  allow_implicit_invocation: false

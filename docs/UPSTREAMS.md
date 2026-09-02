@@ -10,6 +10,8 @@ The machine-readable allowlist is [`catalog/upstreams.json`](../catalog/upstream
 | --- | --- | --- | --- | --- |
 | Graphify | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) | Version-pinned PyPI package `graphifyy`, installed in a toolkit-managed Python environment | Apache-2.0 | Codex + Claude |
 | Matt Pocock's Skills | [mattpocock/skills](https://github.com/mattpocock/skills) | Current upstream `main`; every discovered skill is validated and copied; exact commit, inventory, and targets are receipted | MIT | Codex + Claude |
+| Hallmark | [nutlope/hallmark](https://github.com/nutlope/hallmark) | Current upstream `main`; only `skills/hallmark` is validated and installed; exact commit and targets are receipted | MIT | Codex + Claude |
+| Vercel Frontend Skills | [vercel-labs/agent-skills](https://github.com/vercel-labs/agent-skills) | Current upstream `main`; only composition patterns, React best practices, and web-design guidelines are validated and installed; exact commit and targets are receipted | Per selected skill; MIT signals | Codex + Claude |
 | Diagram Design | [cathrynlavery/diagram-design](https://github.com/cathrynlavery/diagram-design) | Native plugin marketplace | MIT | Codex + Claude |
 | Ponytail | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | Native plugin marketplace | MIT | Codex + Claude |
 | Understand Anything | [Egonex-AI/Understand-Anything](https://github.com/Egonex-AI/Understand-Anything) | Native plugin marketplace | MIT | Codex + Claude |
@@ -58,6 +60,16 @@ The list mixes first-party and curated partner work; marketplace placement is no
 | `superpowers` | Jesse Vincent / `obra/superpowers`, pinned by Anthropic's marketplace at the commit recorded in `catalog/upstreams.json`. |
 | Other entries above | Shipped from Anthropic-controlled plugin directories in the managed marketplace. |
 
+## Frontend set
+
+- `hallmark` supplies opinionated anti-template building, audit, redesign, and study workflows. It remains Nutlope/Together AI's third-party work; Agent Toolkit does not list it as a personal skill.
+- `composition-patterns` supplies scalable React component APIs.
+- `react-best-practices` supplies React and Next.js performance guidance.
+- `web-design-guidelines` supplies accessibility and interface-quality review guidance.
+- Anthropic's `frontend-design` remains in the Claude provider bundle for broader visual direction.
+
+The default does not connect Figma. Its skills and app require account-specific access and permission review, so users add that integration separately when they actually need it.
+
 ## Update behavior
 
 `agent-kit update` performs the following:
@@ -65,13 +77,14 @@ The list mixes first-party and curated partner work; marketplace placement is no
 1. Refreshes Agent Toolkit's own `stable` source and native marketplace.
 2. Upgrades Graphify inside the toolkit-managed isolated Python environment, pins that exact executable in each generated client skill, and verifies the command can be discovered from those instructions.
 3. Fetches Matt Pocock's current upstream `main`, checks out the exact fetched commit, validates every complete skill tree, installs every discovered skill for the selected clients, archives receipt-owned skills removed upstream, and records the resolved commit, inventory, and targets in `~/.agent-toolkit/upstreams.json`.
-4. Refreshes each registered native plugin marketplace and fast-forwards the verified OpenAI fallback checkout when that adapter is in use.
-5. Reinstalls the toolkit-owned, receipted personal workflow plugin from the refreshed marketplace source in both clients. Claude keeps plugin data during replacement.
-6. Rechecks the pinned Obscura archive and repairs toolkit-managed MCP registrations when its catalog version changes.
+4. Fetches Hallmark and Vercel's frontend source from their allowlisted upstream branches, validates only the named skill trees, and records each exact commit, inventory, and managed target.
+5. Refreshes each registered native plugin marketplace and fast-forwards the verified OpenAI fallback checkout when that adapter is in use.
+6. Reinstalls the toolkit-owned, receipted personal workflow plugin from the refreshed marketplace source in both clients. Claude keeps plugin data during replacement.
+7. Rechecks the pinned Obscura archive and repairs toolkit-managed MCP registrations when its catalog version changes.
 
-The allowlist points at named upstream branches for marketplace packages and Matt Pocock's skill source so updates can follow provider releases. That is convenient but means an update is also a trust decision. Matt's current branch is mutable by design; `doctor` proves the installed trees still match the exact commit recorded at install/update time, not that upstream has remained unchanged. Review the upstream diff or use `--core-only` when you need a frozen, repository-only setup.
+The allowlist points at named upstream branches for marketplace packages and tracked skill sources so updates can follow provider releases. That is convenient but means an update is also a trust decision. `doctor` proves installed skill trees still match the exact commit recorded at install/update time, not that an upstream branch has remained unchanged. Review the upstream diff or use `--core-only` when you need a repository-only setup.
 
-If a destination skill already exists without a toolkit ownership receipt, setup refuses to touch it. Use `--adopt-existing` only when you intend to replace it. If its contents differ, the existing tree is preserved under `~/.agent-toolkit/backups/matt-pocock-skills/` before replacement; a byte-identical tree is retained in place. Receipt-owned skills removed from Matt's current branch are also archived there instead of being left agent-visible. Symlinked or otherwise unsafe skill trees are always refused.
+If a destination skill already exists without a toolkit ownership receipt, setup refuses to touch it. Use `--adopt-existing` only when you intend to replace it. If its contents differ, the existing tree is preserved under the source-specific folder in `~/.agent-toolkit/backups/` before replacement. Receipt-owned skills removed from an allowlist or tracked source are archived instead of being left agent-visible. Symlinked or otherwise unsafe skill trees are always refused.
 
 ## Removal behavior
 

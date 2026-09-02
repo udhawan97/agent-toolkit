@@ -29,9 +29,11 @@ CLAUDE_CONFIG_DIR="$AGENT_KIT_TEST_ROOT/claude" \
 
 Acceptance requires both clients to report the marketplace and every profile plugin after install and update, the receipt to remain owner-only on POSIX, Claude uninstall to use `--keep-data`, and the final marketplace lists plus managed guidance blocks to be empty. On Windows, record the inherited ACL until an owner-only ACL assertion is added. A public `stable` preview additionally requires a clean clone of the exact candidate SHA. An immutable tagged release also requires fresh authenticated invocation of every bundled skill in both clients.
 
+Before uninstall, verify that the Codex plugin's canonical `skills/` root and the Claude plugin adapter's `skills/` root each contain exactly 15 `SKILL.md` entrypoints, even though the Codex package also contains the nested Claude adapter for marketplace portability. Confirm `claude plugin details evidence-workflows@agent-toolkit` reports the same 15 names. Confirm `dev-review`, `improve-userflow-design`, `loop-refine-release`, `main-cleanup`, `releasegit`, and `tech-debt` carry `disable-model-invocation: true` in the installed Claude adapter and `allow_implicit_invocation: false` in installed Codex metadata.
+
 ## Disposable expanded-profile lifecycle
 
-Run this only with network access, Git, Python 3.10+ with `venv` support, and the two real client CLIs. It fetches the allowlisted upstream packages, creates a managed Graphify environment, resolves Matt Pocock's current upstream branch, and downloads a checksum-verified Obscura archive into a disposable home.
+Run this only with network access, Git, Python 3.10+ with `venv` support, and the two real client CLIs. It fetches the allowlisted upstream packages, creates a managed Graphify environment, resolves the current Matt Pocock, Hallmark, and Vercel branches, and downloads a checksum-verified Obscura archive into a disposable home.
 
 ```bash
 AGENT_KIT_UPSTREAM_ROOT=$(mktemp -d)
@@ -52,6 +54,12 @@ CODEX_HOME="$AGENT_KIT_UPSTREAM_ROOT/codex" \
 CLAUDE_CONFIG_DIR="$AGENT_KIT_UPSTREAM_ROOT/claude" \
 ./bin/agent-kit update
 ```
+
+Acceptance requires the upstream receipt to record exact commits and managed targets for `matt-pocock-skills`, `hallmark`, and `vercel-frontend-skills`; Hallmark plus the three allowlisted Vercel skill trees must byte-match their receipted source in both client discovery roots. No unallowlisted Vercel skill may appear.
+
+## Automatic-update command generation
+
+Repository tests exercise GitHub-source gating, owner-only POSIX configuration/wrapper modes, and daily/weekly command parsing without registering a real background job. Before promoting scheduler support on a platform, use a disposable OS account to run `auto-update enable`, `status`, `run`, and `disable`; confirm the current-user schedule is active, the log is written, prerequisite installation remains disabled, and disable removes only the known schedule files.
 
 Acceptance requires all toolkit and upstream doctor rows to pass, each Graphify client skill to name the exact invokable toolkit-managed executable, every Matt Pocock skill discovered at the receipted source commit to byte-match that source and resolve in both client homes, provider marketplace identities plus plugins to be installed and enabled, the Obscura executable and worker checksums to match the catalog, and both MCP registrations to point exactly to the toolkit-managed binary with the `mcp` argument. Provider login is not part of this test.
 

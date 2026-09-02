@@ -2,23 +2,82 @@
   "schemaVersion": 1,
   "plugin": "evidence-workflows",
   "license": "MIT",
-  "reviewPolicy": "Every personally created skill cleared for public redistribution must be listed here and packaged in the plugin. Private, project-specific, account-bound, duplicated, or third-party skills are excluded.",
+  "reviewPolicy": "Every personally created skill cleared for public redistribution must be listed here and packaged in the plugin. Private, account-bound, duplicated, and third-party skills are excluded. Public product-specific workflows may be included only when they are self-contained and contain no personal paths or data.",
   "skills": {
     "council-review": {
       "origin": "Agent Toolkit contributors",
-      "distribution": "toolkit-owned"
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "folioorb-financial-integrity": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
+    },
+    "golavo-product-trust": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
     },
     "dev-review": {
       "origin": "Agent Toolkit contributors",
-      "distribution": "toolkit-owned"
+      "distribution": "toolkit-owned",
+      "scope": "general"
     },
     "improve-userflow-design": {
       "origin": "Agent Toolkit contributors",
-      "distribution": "toolkit-owned"
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "localtesting": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "loop-refine-release": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "main-cleanup": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "orifold-workflow": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
+    },
+    "refresh-docs": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "releasegit": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
+    },
+    "releasetesting": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
+    },
+    "shipped-product-verification": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
     },
     "tech-debt": {
       "origin": "Agent Toolkit contributors",
-      "distribution": "toolkit-owned"
+      "distribution": "toolkit-owned",
+      "scope": "general"
+    },
+    "voyalier-product-contract": {
+      "origin": "Agent Toolkit contributors",
+      "distribution": "toolkit-owned",
+      "scope": "public-product-guardrail"
     }
   }
 }

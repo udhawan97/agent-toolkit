@@ -1,0 +1,7 @@
+interface:
+  display_name: "Main Cleanup"
+  short_description: "Safely consolidate branches into clean main"
+  default_prompt: "Use $main-cleanup to inspect all repository branches, integrate relevant work, verify it, and leave main clean and synchronized."
+
+policy:
+  allow_implicit_invocation: false

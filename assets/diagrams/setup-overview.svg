@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Toolkit setup overview</title>
+  <desc id="desc">One command detects Codex and Claude Code, installs the current allowlisted stack, and checks the result. Setup does not copy client credentials or authentication state.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="1" stop-color="#111933"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#36d7ff"/>
+      <stop offset="0.5" stop-color="#9c6cff"/>
+      <stop offset="1" stop-color="#f5c36a"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="frame">
+      <rect width="1200" height="420" rx="28"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1200" height="420" rx="28" fill="url(#bg)"/>
+  <g clip-path="url(#frame)">
+    <circle cx="1080" cy="60" r="170" fill="#9c6cff" opacity="0.06"/>
+    <circle cx="118" cy="402" r="190" fill="#36d7ff" opacity="0.05"/>
+  </g>
+  <rect x="1" y="1" width="1198" height="418" rx="27" fill="none" stroke="#263451" stroke-width="2"/>
+
+  <text x="60" y="55" fill="#8fa2c3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" letter-spacing="2.4">ONE COMMAND · NATIVE CLIENTS · CHECKED RESULT</text>
+
+  <path d="M255 191H315M545 191H605M835 191H895" fill="none" stroke="url(#accent)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M301 178l14 13-14 13M591 178l14 13-14 13M881 178l14 13-14 13" fill="none" stroke="#8fa2c3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(50 90)">
+    <rect width="205" height="202" rx="20" fill="#111d32" stroke="#2b3b5d" stroke-width="2"/>
+    <rect x="26" y="27" width="56" height="46" rx="8" fill="#0a1425" stroke="#36d7ff" stroke-width="2"/>
+    <path d="M40 43l9 8-9 8M56 59h13" fill="none" stroke="#36d7ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="26" y="112" fill="#f6f8fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Run setup</text>
+    <text x="26" y="141" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Paste one command.</text>
+    <text x="26" y="166" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Nothing runs on clone.</text>
+  </g>
+
+  <g transform="translate(340 90)">
+    <rect width="205" height="202" rx="20" fill="#111d32" stroke="#2b3b5d" stroke-width="2"/>
+    <circle cx="51" cy="50" r="24" fill="#36d7ff" opacity="0.15" stroke="#36d7ff" stroke-width="2"/>
+    <circle cx="83" cy="50" r="24" fill="#9c6cff" opacity="0.15" stroke="#9c6cff" stroke-width="2"/>
+    <text x="43" y="57" fill="#e9fbff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700">C</text>
+    <text x="75" y="57" fill="#f1ebff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18" font-weight="700">A</text>
+    <text x="26" y="112" fill="#f6f8fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Detect clients</text>
+    <text x="26" y="141" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Codex, Claude Code,</text>
+    <text x="26" y="166" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">or both.</text>
+  </g>
+
+  <g transform="translate(630 90)">
+    <rect width="205" height="202" rx="20" fill="#111d32" stroke="#2b3b5d" stroke-width="2"/>
+    <path d="M30 62l36-20 36 20-36 20-36-20zM30 50l36-20 36 20M30 74l36 20 36-20" fill="none" stroke="#9c6cff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="26" y="112" fill="#f6f8fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Install stack</text>
+    <text x="26" y="141" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Skills, plugins, tools,</text>
+    <text x="26" y="166" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">and shared guidance.</text>
+  </g>
+
+  <g transform="translate(920 90)">
+    <rect width="230" height="202" rx="20" fill="#111d32" stroke="#3d4760" stroke-width="2"/>
+    <path d="M62 26l35 13v27c0 24-14 39-35 48-21-9-35-24-35-48V39l35-13z" fill="#f5c36a" opacity="0.12" stroke="#f5c36a" stroke-width="2.5"/>
+    <path d="M46 67l11 11 22-25" fill="none" stroke="#f5c36a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+    <text x="26" y="139" fill="#f6f8fc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="20" font-weight="700">Run doctor</text>
+    <text x="26" y="168" fill="#9eacc4" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15">Pass—or stop clearly.</text>
+  </g>
+
+  <rect x="50" y="325" width="1100" height="54" rx="14" fill="#0a1425" stroke="#263451"/>
+  <circle cx="79" cy="352" r="7" fill="#36d7ff"/>
+  <text x="99" y="358" fill="#c8d4e8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">allowlisted sources</text>
+  <circle cx="316" cy="352" r="7" fill="#9c6cff"/>
+  <text x="336" y="358" fill="#c8d4e8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">exact receipts</text>
+  <circle cx="529" cy="352" r="7" fill="#f5c36a"/>
+  <text x="549" y="358" fill="#c8d4e8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">safe backups</text>
+  <circle cx="730" cy="352" r="7" fill="#23b8a6"/>
+  <text x="750" y="358" fill="#c8d4e8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">credentials not copied</text>
+</svg>

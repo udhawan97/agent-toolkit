@@ -43,6 +43,13 @@ Watch out:
 - When Ponytail is available, it minimizes solution size inside that process.
 - On conflict, process and verification gates win; minimalism never removes a required test or safety boundary.
 
+### Frontend skill routing
+
+- Use Hallmark for explicit Hallmark requests and anti-template interface creation, critique, redesign, or design-study work.
+- Use the provider's general frontend-design skill for broad visual direction when Hallmark was not requested.
+- Use Vercel Composition Patterns for React component API design, Vercel React Best Practices for React or Next.js performance, and Web Interface Guidelines for UI, UX, and accessibility review.
+- When triggers overlap, choose the smallest relevant specialist instead of stacking competing aesthetic systems.
+
 ### Graphify
 
 - For codebase architecture, relationships, data flow, or cross-file behavior, use the installed Graphify skill before broad raw-source searching.

@@ -2,13 +2,13 @@
 
 ## Package contract
 
-Each folder under `plugins/` is one self-contained package. It carries both `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`. Its `skills/` directory is the canonical Codex and portable source payload; its `claude/` adapter mirrors the same skill trees and may add only Claude-native invocation-control frontmatter. Never make a packaged skill reach into a sibling plugin or a developer home directory.
+Each folder under `plugins/` is one self-contained dual-client package. Its `.codex-plugin/plugin.json` and canonical `skills/` payload serve Codex; its `claude/.claude-plugin/plugin.json` and `claude/skills/` adapter serve Claude Code. The adapter must byte-match every canonical supporting file and skill body; only client invocation-control frontmatter may differ. Never make a packaged skill reach into a sibling plugin or a developer home directory.
 
 Both marketplace catalogs must list the same plugin names. Plugin versions must match across both manifests and the Claude marketplace entry. Release plugin changes with strict semantic versions.
 
 Outside packages belong in `catalog/upstreams.json`, not under `plugins/`. Each upstream entry must name its original repository, distribution mechanism, license signal, supported clients, and the smallest allowlisted plugin set. Release archives also require an immutable version plus archive and executable-payload SHA-256 values for every supported platform.
 
-Matt Pocock's bundle is the deliberate exception to a fixed plugin/skill allowlist: it promises every skill on the provider's current `main`. Preserve its provider identity checks, complete-tree/link validation, exact-commit and target receipt, ownership-aware replacement, stale-skill archival, and doctor comparison together. A mutable source change requires the same fresh install/update/doctor evidence as a catalog change.
+Matt Pocock's bundle is the deliberate exception to a fixed skill allowlist: it promises every skill on the provider's current `main`. Hallmark and Vercel use explicit `skills` mappings so only the reviewed frontend trees are installed. Preserve provider identity checks, complete-tree/link validation, exact-commit and target receipts, ownership-aware replacement, stale-skill archival, and doctor comparison together. A mutable source change requires the same fresh install/update/doctor evidence as a catalog change.
 
 The toolkit-owned plugin is governed by `catalog/personal-skills.json`. Any public-safe personal skill addition or removal must change the manifest and payload together; repository validation rejects drift.
 
@@ -16,7 +16,7 @@ The toolkit-owned plugin is governed by `catalog/personal-skills.json`. Any publ
 
 1. Scaffold the Codex package with the system plugin creator into `plugins/` and the repository marketplace.
 2. Add the matching Claude manifest and marketplace entry.
-3. Restrict canonical skill frontmatter to portable Agent Skills fields. Mirror the tree into the Claude adapter, adding only required Claude-native invocation-control frontmatter, and validate both payloads for drift.
+3. Keep canonical skill frontmatter portable. In the Claude adapter, action-bearing skills may additionally use `disable-model-invocation: true` when matching Codex metadata also disables implicit invocation.
 4. Add the plugin to one or more profiles.
 5. Run `./bin/agent-kit validate --native`.
 6. Test a local installation with isolated client homes before updating the changelog.

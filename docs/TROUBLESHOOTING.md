@@ -92,15 +92,32 @@ python3 -m venv /tmp/agent-toolkit-venv-check
 
 If that fails on Debian or Ubuntu, install `python3-venv`. Then rerun the original one-line setup command and `agent-kit doctor`.
 
-## Matt Pocock skills do not match
+## A tracked skill package does not match
 
-Every install/update fetches the current upstream `main`, records its exact commit, and byte-checks all discovered skill trees. Run the explicit refresh to repair ordinary drift:
+Every install/update fetches the current upstream `main`, records its exact commit, and byte-checks the discovered or explicitly allowlisted skill trees from Matt Pocock, Hallmark, and Vercel. Run the explicit refresh to repair ordinary drift:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- update
 ```
 
-An existing skill directory without a matching toolkit receipt is left untouched and stops setup. If you explicitly intend to replace it, rerun with `--adopt-existing`; setup first preserves that copy under `~/.agent-toolkit/backups/matt-pocock-skills/`. It refuses symlinked destinations or a modified managed source checkout; inspect those paths instead of deleting them blindly. Receipt-owned skills removed from Matt's current branch are archived under the same backup root during update.
+An existing skill directory without a matching toolkit receipt is left untouched and stops setup. If you explicitly intend to replace it, rerun with `--adopt-existing`; setup first preserves that copy under the package-specific directory in `~/.agent-toolkit/backups/`. It refuses symlinked destinations or a modified managed source checkout; inspect those paths instead of deleting them blindly. Receipt-owned skills removed from a tracked package are archived under the same backup root during update.
+
+## Automatic updates are configured but inactive
+
+Check the user-level schedule and local log through the same one-line launcher used for installation:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update status
+tail -n 80 ~/.agent-toolkit/auto-update/update.log
+```
+
+Automatic updates never request administrator access or install missing prerequisites. If Git, Python, the user scheduler, or network access is unavailable in the background session, fix that dependency and then re-enable the schedule. Re-enabling is idempotent and replaces only Agent Toolkit's known current-user job:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update enable --frequency weekly
+```
+
+Use `auto-update run` for an immediate foreground test. Use `auto-update disable` to remove the schedule and wrapper without uninstalling skills, plugins, guidance, receipts, backups, or the update log.
 
 ## Obscura download or checksum fails
 

@@ -1,16 +1,16 @@
 {
   "name": "evidence-workflows",
   "version": "0.3.0",
-  "description": "Evidence-led product, codebase, architecture, and production reviews with independent gates.",
+  "description": "Portable senior review, design, audit, local-testing, documentation, release, and product-safety workflows.",
   "author": {"name": "Agent Toolkit contributors"},
   "repository": "https://github.com/udhawan97/agent-toolkit",
   "license": "MIT",
-  "keywords": ["architecture", "audit", "code-review", "evidence", "production", "user-flow"],
+  "keywords": ["architecture", "audit", "code-review", "design", "documentation", "production", "release", "testing", "user-flow"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Evidence Workflows",
-    "shortDescription": "Review products and codebases through evidence and gates.",
-    "longDescription": "Audit real user journeys, codebase architecture, technical debt, and production readiness; coordinate independent specialists; and review substantive results before delivery.",
+    "shortDescription": "Audit, design, verify, document, and ship with evidence.",
+    "longDescription": "Fifteen original workflows for senior production review, design craft, user-flow and technical-debt audits, local testing, documentation, release readiness, product-specific safety, and independent review.",
     "developerName": "Agent Toolkit contributors",
     "category": "Productivity",
     "capabilities": ["Analysis", "Write"],
@@ -18,8 +18,8 @@
     "defaultPrompt": [
       "Audit a user flow without changing application code.",
       "Run a senior production review with three specialist developers.",
-      "Trace technical debt to a real user consequence.",
-      "Review material findings through the council gate."
+      "Audit every branch and identify what is safe to integrate.",
+      "Verify the real local or shipped product surface."
     ]
   }
 }

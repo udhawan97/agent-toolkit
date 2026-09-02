@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -161,6 +162,25 @@ class LauncherRegressionTests(unittest.TestCase):
         self.assertIn("bin/agent-kit doctor", calls[-1])
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher runs on Linux and macOS")
+    def test_posix_launcher_delegates_auto_update_without_running_doctor(self) -> None:
+        log = self.root / "python-arguments.log"
+        fake_python = self.fake_bin / "python3"
+        fake_python.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AGENT_KIT_PYTHON_LOG\"\nexit 0\n",
+            encoding="utf-8",
+        )
+        fake_python.chmod(0o755)
+        env = self.env | {"AGENT_KIT_PYTHON_LOG": str(log)}
+        run(
+            ["sh", str(ROOT / "bin" / "setup"), "auto-update", "status"],
+            env=env,
+        )
+        calls = log.read_text(encoding="utf-8").splitlines()
+        delegated = [call for call in calls if "bin/agent-kit" in call]
+        self.assertEqual(len(delegated), 1)
+        self.assertIn("bin/agent-kit auto-update status", delegated[0])
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher runs on Linux and macOS")
     def test_posix_launcher_requires_python_venv_capability(self) -> None:
         fake_python = self.fake_bin / "python3"
         fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -233,6 +253,155 @@ class ReceiptSafetyTests(unittest.TestCase):
             self.assertIn("Refusing to access toolkit state through a symlink", result.stdout + result.stderr)
 
 
+class AutomaticUpdateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_agent_kit()
+
+    def test_auto_update_requires_a_github_sourced_install(self) -> None:
+        with (
+            patch.object(
+                self.module,
+                "load_state",
+                return_value={"source": {"kind": "local", "path": "/reviewed/source"}},
+            ),
+            self.assertRaisesRegex(self.module.ToolkitError, "GitHub source"),
+        ):
+            self.module.auto_update_source()
+
+    def test_auto_update_enable_writes_private_permissioned_configuration(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-auto-update-") as temporary:
+            root = Path(temporary)
+            state = root / "state"
+            automatic = state / "auto-update"
+            config = automatic / "config.json"
+            log = automatic / "update.log"
+            source = {
+                "repo": "example/agent-toolkit",
+                "channel": "stable",
+                "root": str(root / "managed-source"),
+            }
+            with (
+                patch.object(self.module, "STATE_DIR", state),
+                patch.object(self.module, "AUTO_UPDATE_DIR", automatic),
+                patch.object(self.module, "AUTO_UPDATE_CONFIG", config),
+                patch.object(self.module, "AUTO_UPDATE_LOG", log),
+                patch.object(self.module, "auto_update_source", return_value=source),
+                patch.object(self.module, "auto_update_platform", return_value="macos"),
+                patch.object(self.module, "auto_update_config", return_value=None),
+                patch.object(
+                    self.module,
+                    "schedule_auto_update",
+                    return_value=[str(root / "scheduled.plist")],
+                ),
+            ):
+                self.module.command_auto_update(
+                    SimpleNamespace(auto_action="enable", frequency="weekly")
+                )
+            payload = json.loads(config.read_text(encoding="utf-8"))
+            self.assertEqual(payload["frequency"], "weekly")
+            self.assertEqual(payload["source"], source)
+            wrapper = Path(payload["wrapper"])
+            self.assertTrue(wrapper.is_file())
+            wrapper_text = wrapper.read_text(encoding="utf-8")
+            self.assertIn("AGENT_KIT_AUTO_PREREQS=0", wrapper_text)
+            self.assertIn("export PATH=", wrapper_text)
+            if os.name != "nt":
+                self.assertEqual(wrapper.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_auto_update_parser_supports_enable_disable_status_and_run(self) -> None:
+        parser = self.module.build_parser()
+        enabled = parser.parse_args(["auto-update", "enable", "--frequency", "daily"])
+        self.assertEqual((enabled.auto_action, enabled.frequency), ("enable", "daily"))
+        for action in ("disable", "status", "run"):
+            parsed = parser.parse_args(["auto-update", action])
+            self.assertEqual(parsed.auto_action, action)
+
+    def test_macos_schedule_generation_is_current_user_and_weekly(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-launchd-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir()
+            wrapper = root / "run-update.sh"
+            wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+            log = root / "update.log"
+            source = {"repo": "example/toolkit", "channel": "stable", "root": str(root)}
+            with (
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module, "AUTO_UPDATE_LOG", log),
+                patch.object(self.module.subprocess, "run") as raw_run,
+                patch.object(self.module, "run") as checked_run,
+            ):
+                paths = self.module.schedule_auto_update(
+                    source, "weekly", "macos", wrapper
+                )
+            plist_path = home / "Library" / "LaunchAgents" / "com.agent-toolkit.update.plist"
+            self.assertEqual(paths, [str(plist_path)])
+            payload = plistlib.loads(plist_path.read_bytes())
+            self.assertEqual(payload["ProgramArguments"], ["/bin/sh", str(wrapper)])
+            self.assertEqual(
+                payload["StartCalendarInterval"],
+                {"Hour": 9, "Minute": 0, "Weekday": 2},
+            )
+            self.assertEqual(payload["StandardOutPath"], str(log))
+            self.assertEqual(plist_path.stat().st_mode & 0o777, 0o600)
+            self.assertIn("bootout", raw_run.call_args.args[0])
+            self.assertIn("bootstrap", checked_run.call_args.args[0])
+
+    def test_linux_schedule_generation_uses_a_persistent_user_timer(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-systemd-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir()
+            wrapper = root / "run update.sh"
+            wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+            source = {"repo": "example/toolkit", "channel": "stable", "root": str(root)}
+            with (
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module.shutil, "which", return_value="/usr/bin/systemctl"),
+                patch.object(self.module, "run") as checked_run,
+            ):
+                paths = self.module.schedule_auto_update(
+                    source, "daily", "linux", wrapper
+                )
+            unit_root = home / ".config" / "systemd" / "user"
+            service = unit_root / "agent-toolkit-update.service"
+            timer = unit_root / "agent-toolkit-update.timer"
+            self.assertEqual(paths, [str(service), str(timer)])
+            self.assertIn(f'ExecStart=/bin/sh "{wrapper}"', service.read_text(encoding="utf-8"))
+            timer_text = timer.read_text(encoding="utf-8")
+            self.assertIn("OnCalendar=*-*-* 09:00:00", timer_text)
+            self.assertIn("Persistent=true", timer_text)
+            self.assertIn("RandomizedDelaySec=1h", timer_text)
+            self.assertEqual(checked_run.call_count, 2)
+
+    def test_windows_schedule_generation_uses_current_user_task(self) -> None:
+        source = {"repo": "example/toolkit", "channel": "stable", "root": "C:/Toolkit"}
+        wrapper = Path("C:/Toolkit/run-update.ps1")
+
+        def executable(name: str) -> str | None:
+            return {
+                "schtasks.exe": "C:/Windows/System32/schtasks.exe",
+                "powershell.exe": "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            }.get(name)
+
+        with (
+            patch.object(self.module.shutil, "which", side_effect=executable),
+            patch.object(self.module, "run") as checked_run,
+        ):
+            paths = self.module.schedule_auto_update(
+                source, "weekly", "windows", wrapper
+            )
+        self.assertEqual(paths, [])
+        command = checked_run.call_args.args[0]
+        self.assertEqual(command[0], "C:/Windows/System32/schtasks.exe")
+        self.assertIn("AgentToolkitUpdate", command)
+        self.assertIn("WEEKLY", command)
+        self.assertIn("MON", command)
+        self.assertNotIn("/RU", command)
+
+
 class UpstreamSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_agent_upstreams()
@@ -247,6 +416,83 @@ class UpstreamSafetyTests(unittest.TestCase):
             self.assertFalse(set(data["upstreams"]) - set(bundles))
         self.assertEqual(bundles["openai-essentials"]["kind"], "codex-official")
 
+    def test_frontend_skill_sources_are_allowlisted_without_claiming_ownership(self) -> None:
+        catalog = json.loads((ROOT / "catalog" / "upstreams.json").read_text(encoding="utf-8"))
+        bundles = catalog["bundles"]
+        self.assertEqual(
+            bundles["hallmark"]["skills"],
+            {"hallmark": "skills/hallmark"},
+        )
+        self.assertEqual(bundles["hallmark"]["repository"], "nutlope/hallmark")
+        self.assertEqual(
+            bundles["vercel-frontend-skills"]["skills"],
+            {
+                "composition-patterns": "skills/composition-patterns",
+                "react-best-practices": "skills/react-best-practices",
+                "web-design-guidelines": "skills/web-design-guidelines",
+            },
+        )
+        for profile in ("recommended", "skills-only", "full"):
+            data = json.loads((ROOT / "profiles" / f"{profile}.json").read_text(encoding="utf-8"))
+            self.assertTrue({"hallmark", "vercel-frontend-skills"}.issubset(data["upstreams"]))
+
+    def test_selected_skills_package_discovers_only_allowlisted_trees(self) -> None:
+        bundle = {
+            "displayName": "Frontend Test",
+            "skillRoot": "skills",
+            "skills": {"selected": "skills/selected"},
+        }
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-selected-skills-") as temporary:
+            checkout = Path(temporary)
+            for name in ("selected", "not-selected"):
+                skill = checkout / "skills" / name
+                skill.mkdir(parents=True)
+                (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+            self.assertEqual(
+                self.module.discover_skill_package(
+                    checkout, bundle, bundle_name="frontend-test"
+                ),
+                {"selected": "skills/selected"},
+            )
+
+    def test_selected_skills_package_receipts_its_own_bundle_identity(self) -> None:
+        bundle = {
+            "displayName": "Frontend Test",
+            "repository": "example/frontend-test",
+            "ref": "main",
+            "skillRoot": "skills",
+            "skills": {"selected": "skills/selected"},
+            "clients": ["codex"],
+        }
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-selected-receipt-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            checkout = root / "checkout"
+            skill = checkout / "skills" / "selected"
+            skill.mkdir(parents=True)
+            home.mkdir()
+            (skill / "SKILL.md").write_text("---\nname: selected\n---\n", encoding="utf-8")
+            state = home / ".agent-toolkit"
+            with (
+                patch.object(self.module.Path, "home", return_value=home),
+                patch.object(self.module, "STATE_DIR", state),
+                patch.object(self.module, "STATE_FILE", state / "upstreams.json"),
+                patch.object(self.module, "ensure_tracked_skills_checkout", return_value=checkout),
+                patch.object(self.module, "git_value", return_value="a" * 40),
+            ):
+                resolved = self.module.install_skills_package(
+                    bundle,
+                    ["codex"],
+                    False,
+                    None,
+                    adopt_existing=False,
+                    profile="recommended",
+                    bundle_name="frontend-test",
+                )
+            receipt = json.loads((state / "upstreams.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["bundles"], ["frontend-test"])
+            self.assertEqual(receipt["resolved"]["frontend-test"]["skills"], resolved["skills"])
+
     def test_public_personal_skill_manifest_matches_plugin_payload(self) -> None:
         catalog = json.loads(
             (ROOT / "catalog" / "personal-skills.json").read_text(encoding="utf-8")
@@ -255,20 +501,29 @@ class UpstreamSafetyTests(unittest.TestCase):
         packaged = {path.parent.name for path in plugin.glob("*/SKILL.md")}
         self.assertEqual(set(catalog["skills"]), packaged)
         claude = ROOT / "plugins" / catalog["plugin"] / "claude" / "skills"
-        adapted = {path.parent.name for path in claude.glob("*/SKILL.md")}
-        self.assertEqual(set(catalog["skills"]), adapted)
+        self.assertEqual(set(catalog["skills"]), {path.parent.name for path in claude.glob("*/SKILL.md")})
+        self.assertEqual(
+            {metadata["scope"] for metadata in catalog["skills"].values()},
+            {"general", "public-product-guardrail"},
+        )
+        self.assertNotIn("hallmark", catalog["skills"])
+        self.assertIn("main-cleanup", catalog["skills"])
 
-    def test_explicit_only_skills_use_native_guards_in_both_clients(self) -> None:
-        plugin = ROOT / "plugins" / "evidence-workflows"
-        for name in ("dev-review", "improve-userflow-design", "tech-debt"):
-            codex = (plugin / "skills" / name / "agents" / "openai.yaml").read_text(
-                encoding="utf-8"
-            )
-            claude = (plugin / "claude" / "skills" / name / "SKILL.md").read_text(
-                encoding="utf-8"
-            )
+    def test_action_bearing_skills_are_explicit_only_in_both_clients(self) -> None:
+        plugin = ROOT / "plugins" / "evidence-workflows" / "skills"
+        claude = ROOT / "plugins" / "evidence-workflows" / "claude" / "skills"
+        for name in (
+            "dev-review",
+            "improve-userflow-design",
+            "loop-refine-release",
+            "main-cleanup",
+            "releasegit",
+            "tech-debt",
+        ):
+            skill = (claude / name / "SKILL.md").read_text(encoding="utf-8")
+            codex = (plugin / name / "agents" / "openai.yaml").read_text(encoding="utf-8")
+            self.assertIn("disable-model-invocation: true", skill)
             self.assertIn("allow_implicit_invocation: false", codex)
-            self.assertIn("disable-model-invocation: true", claude)
 
     def test_dev_review_packaged_validators_and_ledger_self_tests_pass(self) -> None:
         plugin = ROOT / "plugins" / "evidence-workflows"
@@ -324,7 +579,7 @@ class UpstreamSafetyTests(unittest.TestCase):
         )
         canonical_cache_file.unlink()
         self.assertNotEqual(rejected_repository.returncode, 0)
-        self.assertIn("payload", rejected_repository.stdout + rejected_repository.stderr)
+        self.assertIn("supporting files differ", rejected_repository.stdout + rejected_repository.stderr)
         repository_validation = subprocess.run(
             [sys.executable, str(ROOT / "bin" / "agent-kit"), "validate"],
             check=False,
@@ -337,6 +592,220 @@ class UpstreamSafetyTests(unittest.TestCase):
             0,
             repository_validation.stdout + repository_validation.stderr,
         )
+
+    def test_claude_adapter_only_allows_invocation_control_frontmatter_difference(self) -> None:
+        module = load_agent_kit()
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-adapter-frontmatter-") as temporary:
+            root = Path(temporary)
+            canonical = root / "canonical" / "sample"
+            adapted = root / "adapted" / "sample"
+            canonical.mkdir(parents=True)
+            adapted.mkdir(parents=True)
+            (canonical / "SKILL.md").write_text(
+                "---\nname: sample\ndescription: Canonical description.\nlicense: MIT\n---\n\n# Sample\n",
+                encoding="utf-8",
+            )
+            (adapted / "SKILL.md").write_text(
+                "---\nname: sample\ndescription: Drifted description.\nlicense: MIT\n---\n\n# Sample\n",
+                encoding="utf-8",
+            )
+            errors: list[str] = []
+            with patch.object(module, "ROOT", root):
+                module.validate_claude_adapter(root / "canonical", root / "adapted", errors)
+            self.assertIn(
+                "Codex and Claude skill frontmatter differs beyond invocation control: sample",
+                errors,
+            )
+
+    def test_skill_validation_checks_links_in_nested_reference_docs(self) -> None:
+        module = load_agent_kit()
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-skill-links-") as temporary:
+            root = Path(temporary)
+            skill = root / "plugins" / "example" / "skills" / "sample" / "SKILL.md"
+            reference = skill.parent / "references" / "guide.md"
+            reference.parent.mkdir(parents=True)
+            skill.write_text(
+                "---\nname: sample\ndescription: Example skill.\nlicense: MIT\n---\n\n# Sample\n",
+                encoding="utf-8",
+            )
+            reference.write_text("[Missing](missing.md)\n", encoding="utf-8")
+            errors: list[str] = []
+            with patch.object(module, "ROOT", root):
+                module.validate_frontmatter(skill, errors)
+            self.assertEqual(
+                errors,
+                ["broken relative link in plugins/example/skills/sample/references/guide.md: missing.md"],
+            )
+
+    def test_privacy_scan_catches_cross_platform_homes_and_url_credentials(self) -> None:
+        module = load_agent_kit()
+        self.assertEqual(module.privacy_markers("safe public text"), [])
+        self.assertEqual(
+            module.privacy_markers("/" + "Users" + "/alex/private.txt"), ["macOS home path"]
+        )
+        self.assertEqual(
+            module.privacy_markers("/" + "home" + "/alex/private.txt"), ["Linux home path"]
+        )
+        self.assertEqual(
+            module.privacy_markers("/" + "root" + "/private.txt"), ["root home path"]
+        )
+        self.assertEqual(
+            module.privacy_markers("C:" + "\\" + "Users" + "\\alex\\private.txt"),
+            ["Windows home path"],
+        )
+        self.assertEqual(
+            module.privacy_markers(
+                "\\\\" + "fileserver" + "\\Users\\alex\\private.txt"
+            ),
+            ["UNC home path"],
+        )
+        self.assertEqual(
+            module.privacy_markers("https://" + "name:secret@example.com/path"),
+            ["credential-bearing URL"],
+        )
+        self.assertEqual(
+            module.privacy_markers("https://" + "ghp_token@github.com/repository"),
+            ["credential-bearing URL"],
+        )
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("zsh"), "macOS app cleanup")
+    def test_localtesting_cleanup_refuses_same_id_app_outside_approved_roots(self) -> None:
+        script = (
+            ROOT
+            / "plugins"
+            / "evidence-workflows"
+            / "skills"
+            / "localtesting"
+            / "scripts"
+            / "cleanup-old-app-copies.sh"
+        )
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-app-cleanup-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            canonical = root / "canonical" / "Example.app"
+            outside = root / "unapproved" / "Example.app"
+            fake_bin = root / "bin"
+            home.mkdir()
+            fake_bin.mkdir()
+            payload = plistlib.dumps(
+                {"CFBundleIdentifier": "example.toolkit.cleanup", "CFBundleExecutable": "Example"}
+            )
+            for app in (canonical, outside):
+                (app / "Contents" / "MacOS").mkdir(parents=True)
+                (app / "Contents" / "Info.plist").write_bytes(payload)
+                executable = app / "Contents" / "MacOS" / "Example"
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+            mdfind = fake_bin / "mdfind"
+            mdfind.write_text(f"#!/bin/sh\nprintf '%s\\n' '{outside}'\n", encoding="utf-8")
+            mdfind.chmod(0o755)
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+            command = [
+                "zsh",
+                str(script),
+                "--canonical-app",
+                str(canonical),
+                "--bundle-id",
+                "example.toolkit.cleanup",
+                "--receipt",
+                str(root / "preview.receipt"),
+            ]
+            preview = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            result = subprocess.run(
+                [*command, "--apply"],
+                check=False,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(outside.is_dir())
+            self.assertIn("outside approved cleanup roots", result.stdout)
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("zsh"), "macOS app cleanup")
+    def test_localtesting_cleanup_refuses_candidates_added_after_preview(self) -> None:
+        script = (
+            ROOT
+            / "plugins"
+            / "evidence-workflows"
+            / "skills"
+            / "localtesting"
+            / "scripts"
+            / "cleanup-old-app-copies.sh"
+        )
+        with tempfile.TemporaryDirectory(prefix="agent-toolkit-app-receipt-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            canonical = root / "canonical" / "Example.app"
+            scan_root = root / "build"
+            first = scan_root / "First.app"
+            second = scan_root / "Second.app"
+            fake_bin = root / "bin"
+            home.mkdir()
+            fake_bin.mkdir()
+
+            def write_app(app: Path) -> None:
+                payload = plistlib.dumps(
+                    {
+                        "CFBundleIdentifier": "example.toolkit.cleanup",
+                        "CFBundleExecutable": "Example",
+                    }
+                )
+                (app / "Contents" / "MacOS").mkdir(parents=True)
+                (app / "Contents" / "Info.plist").write_bytes(payload)
+                executable = app / "Contents" / "MacOS" / "Example"
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+
+            write_app(canonical)
+            write_app(first)
+            mdfind = fake_bin / "mdfind"
+            mdfind.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            mdfind.chmod(0o755)
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+            command = [
+                "zsh",
+                str(script),
+                "--canonical-app",
+                str(canonical),
+                "--bundle-id",
+                "example.toolkit.cleanup",
+                "--scan-root",
+                str(scan_root),
+                "--receipt",
+                str(root / "preview.receipt"),
+            ]
+            preview = subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            write_app(second)
+            result = subprocess.run(
+                [*command, "--apply"],
+                check=False,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(first.is_dir())
+            self.assertTrue(second.is_dir())
+            self.assertIn("changed after preview", result.stderr)
 
     def test_obscura_allowlist_has_strong_digests(self) -> None:
         catalog = json.loads((ROOT / "catalog" / "upstreams.json").read_text(encoding="utf-8"))

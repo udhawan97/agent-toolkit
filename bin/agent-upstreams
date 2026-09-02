@@ -531,15 +531,23 @@ def checkout_problem(
     return None
 
 
-def ensure_tracked_skills_checkout(bundle: dict[str, Any], dry_run: bool) -> Path:
+def ensure_tracked_skills_checkout(
+    bundle: dict[str, Any],
+    dry_run: bool,
+    *,
+    bundle_name: str = "matt-pocock-skills",
+) -> Path:
+    display_name = bundle.get("displayName", bundle_name)
     git = shutil.which("git")
     if not git:
-        raise UpstreamError("Matt Pocock's skills require Git on PATH.")
-    checkout = STATE_DIR / "sources" / "matt-pocock-skills"
+        raise UpstreamError(f"{display_name} requires Git on PATH.")
+    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", bundle_name):
+        raise UpstreamError(f"Unsafe skills bundle name: {bundle_name}")
+    checkout = STATE_DIR / "sources" / bundle_name
     repository = bundle["repository"]
     ref = bundle.get("ref", "main")
     if checkout.is_symlink():
-        raise UpstreamError(f"Refusing symlinked Matt Pocock skills source: {checkout}")
+        raise UpstreamError(f"Refusing symlinked {display_name} source: {checkout}")
     if not checkout.exists():
         if not dry_run:
             ensure_private_directory(checkout.parent)
@@ -557,45 +565,75 @@ def ensure_tracked_skills_checkout(bundle: dict[str, Any], dry_run: bool) -> Pat
             dry_run=dry_run,
         )
     elif not git_checkout_matches(checkout, repository):
-        raise UpstreamError(f"Refusing unexpected Matt Pocock skills source at {checkout}")
+        raise UpstreamError(f"Refusing unexpected {display_name} source at {checkout}")
     if dry_run:
-        print(f"+ fetch the current Matt Pocock skills from origin/{ref}")
+        print(f"+ fetch the current {display_name} source from origin/{ref}")
         return checkout
     if git_value(checkout, "status", "--porcelain"):
-        raise UpstreamError(f"Refusing modified Matt Pocock skills checkout: {checkout}")
+        raise UpstreamError(f"Refusing modified {display_name} checkout: {checkout}")
     run([git, "-C", str(checkout), "fetch", "--prune", "origin", ref])
     run([git, "-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"])
     head = git_value(checkout, "rev-parse", "HEAD")
     fetched = git_value(checkout, "rev-parse", "FETCH_HEAD")
     problem = checkout_problem(checkout, repository, expected_commit=fetched)
     if problem:
-        raise UpstreamError(f"Matt Pocock skills source verification failed: {problem}")
+        raise UpstreamError(f"{display_name} source verification failed: {problem}")
     if not head or head != fetched:
-        raise UpstreamError("Matt Pocock skills source does not exactly match the fetched commit")
+        raise UpstreamError(f"{display_name} source does not exactly match the fetched commit")
     return checkout
 
 
-def discover_skill_package(checkout: Path, bundle: dict[str, Any]) -> dict[str, str]:
+def discover_skill_package(
+    checkout: Path,
+    bundle: dict[str, Any],
+    *,
+    bundle_name: str = "matt-pocock-skills",
+) -> dict[str, str]:
+    display_name = bundle.get("displayName", bundle_name)
     root = checkout / bundle.get("skillRoot", "skills")
     if root.is_symlink() or not root.is_dir():
-        raise UpstreamError(f"Matt Pocock skills root is missing or unsafe: {root}")
+        raise UpstreamError(f"{display_name} skills root is missing or unsafe: {root}")
     discovered: dict[str, str] = {}
-    for skill_file in sorted(root.rglob("SKILL.md")):
-        source = skill_file.parent
+    allowlist = bundle.get("skills")
+    if allowlist is None:
+        candidates = [
+            (skill_file.parent.name, skill_file.parent)
+            for skill_file in sorted(root.rglob("SKILL.md"))
+        ]
+    else:
+        if not isinstance(allowlist, dict) or not allowlist:
+            raise UpstreamError(f"{display_name} has an invalid skill allowlist")
+        candidates = []
+        for name, relative in sorted(allowlist.items()):
+            if (
+                not isinstance(relative, str)
+                or not relative
+                or Path(relative).is_absolute()
+                or ".." in Path(relative).parts
+            ):
+                raise UpstreamError(f"{display_name} has an unsafe skill path for {name}")
+            source = checkout / relative
+            try:
+                source.resolve().relative_to(checkout.resolve())
+            except ValueError as exc:
+                raise UpstreamError(f"{display_name} skill escapes its checkout: {name}") from exc
+            if not (source / "SKILL.md").is_file():
+                raise UpstreamError(f"{display_name} allowlisted skill is missing: {name}")
+            candidates.append((name, source))
+    for name, source in candidates:
         for candidate in (source, *source.parents):
             if candidate.is_symlink():
-                raise UpstreamError(f"Matt Pocock skill path traverses a symlink: {candidate}")
-            if candidate == root:
+                raise UpstreamError(f"{display_name} skill path traverses a symlink: {candidate}")
+            if candidate in {root, checkout}:
                 break
-        name = source.name
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
-            raise UpstreamError(f"Matt Pocock skill has an unsafe name: {name}")
+            raise UpstreamError(f"{display_name} skill has an unsafe name: {name}")
         if name in discovered:
-            raise UpstreamError(f"Matt Pocock skill name is duplicated: {name}")
+            raise UpstreamError(f"{display_name} skill name is duplicated: {name}")
         skill_tree_manifest(source)
         discovered[name] = source.relative_to(checkout).as_posix()
     if not discovered:
-        raise UpstreamError("No Matt Pocock skills were found in the fetched source")
+        raise UpstreamError(f"No {display_name} skills were found in the fetched source")
     return discovered
 
 
@@ -637,7 +675,7 @@ def backup_and_copy_skill(
         backup = backup_root / destination.name
         backup.parent.mkdir(parents=True, exist_ok=True)
         if backup.exists() or backup.is_symlink():
-            raise UpstreamError(f"Refusing existing Matt Pocock skill backup: {backup}")
+            raise UpstreamError(f"Refusing existing skill backup: {backup}")
         print(f"+ preserve existing skill before refresh: {destination} -> {backup}")
         shutil.move(str(destination), str(backup))
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -664,13 +702,17 @@ def skill_destination_roots(selected: list[str]) -> list[tuple[Path, Path]]:
 
 
 def previous_skill_ownership(
-    bundle: dict[str, Any], receipt: dict[str, Any] | None, roots: list[tuple[Path, Path]]
+    bundle: dict[str, Any],
+    receipt: dict[str, Any] | None,
+    roots: list[tuple[Path, Path]],
+    *,
+    bundle_name: str = "matt-pocock-skills",
 ) -> dict[str, set[str]]:
     ownership = {str(root): set() for root, _ in roots}
-    if not receipt or "matt-pocock-skills" not in receipt.get("bundles", []):
+    if not receipt or bundle_name not in receipt.get("bundles", []):
         return ownership
     if receipt.get("schemaVersion") == 2:
-        resolved = receipt.get("resolved", {}).get("matt-pocock-skills", {})
+        resolved = receipt.get("resolved", {}).get(bundle_name, {})
         skills = resolved.get("skills") if isinstance(resolved, dict) else None
         targets = resolved.get("targets") if isinstance(resolved, dict) else None
         if isinstance(skills, dict) and isinstance(targets, list):
@@ -687,11 +729,11 @@ def previous_skill_ownership(
                     )
         return ownership
 
-    checkout = STATE_DIR / "sources" / "matt-pocock-skills"
+    checkout = STATE_DIR / "sources" / bundle_name
     if checkout_problem(checkout, bundle["repository"]):
         return ownership
     try:
-        names = set(discover_skill_package(checkout, bundle))
+        names = set(discover_skill_package(checkout, bundle, bundle_name=bundle_name))
     except UpstreamError:
         return ownership
     prior_clients = receipt.get("clients", [])
@@ -710,7 +752,7 @@ def archive_stale_skill(destination: Path, backup: Path, trusted_root: Path) -> 
         raise UpstreamError(f"Refusing non-directory managed skill destination: {destination}")
     backup.parent.mkdir(parents=True, exist_ok=True)
     if backup.exists() or backup.is_symlink():
-        raise UpstreamError(f"Refusing existing retired Matt Pocock skill backup: {backup}")
+        raise UpstreamError(f"Refusing existing retired skill backup: {backup}")
     print(f"+ archive skill removed upstream: {destination} -> {backup}")
     shutil.move(str(destination), str(backup))
 
@@ -746,7 +788,9 @@ def install_skills_package(
     *,
     adopt_existing: bool,
     profile: str,
+    bundle_name: str = "matt-pocock-skills",
 ) -> dict[str, Any]:
+    display_name = bundle.get("displayName", bundle_name)
     selected = clients_for(bundle, clients)
     if not selected:
         return {}
@@ -762,10 +806,15 @@ def install_skills_package(
         )
     )
     roots = skill_destination_roots(managed_clients)
-    ownership = previous_skill_ownership(bundle, receipt, roots) if not dry_run else {}
-    checkout = ensure_tracked_skills_checkout(bundle, dry_run)
+    ownership = (
+        previous_skill_ownership(bundle, receipt, roots, bundle_name=bundle_name)
+        if not dry_run
+        else {}
+    )
+    checkout = ensure_tracked_skills_checkout(bundle, dry_run, bundle_name=bundle_name)
     if dry_run:
-        print("+ discover and copy every validated skill in the fetched Matt Pocock source")
+        selection = "the allowlisted" if bundle.get("skills") else "every discovered"
+        print(f"+ validate and copy {selection} skill from {display_name}")
         return {
             "repository": bundle["repository"],
             "ref": bundle.get("ref", "main"),
@@ -773,12 +822,12 @@ def install_skills_package(
             "skills": {},
             "targets": [],
         }
-    skills = discover_skill_package(checkout, bundle)
+    skills = discover_skill_package(checkout, bundle, bundle_name=bundle_name)
     commit = git_value(checkout, "rev-parse", "HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise UpstreamError("Matt Pocock skills checkout did not resolve to an exact Git commit")
+        raise UpstreamError(f"{display_name} checkout did not resolve to an exact Git commit")
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    backup_root = STATE_DIR / "backups" / "matt-pocock-skills" / stamp
+    backup_root = STATE_DIR / "backups" / bundle_name / stamp
     current_names = set(skills)
     preflight_skill_changes(
         roots,
@@ -792,9 +841,9 @@ def install_skills_package(
     save_receipt(
         profile,
         managed_clients,
-        ["matt-pocock-skills"],
+        [bundle_name],
         {
-            "matt-pocock-skills": {
+            bundle_name: {
                 "repository": bundle["repository"],
                 "ref": bundle.get("ref", "main"),
                 "commit": commit,
@@ -824,7 +873,7 @@ def install_skills_package(
                 adopt_existing=adopt_existing,
             )
     print(
-        f"= installed {len(skills)} Matt Pocock skills from {commit[:12]} for "
+        f"= installed {len(skills)} {display_name} skill(s) from {commit[:12]} for "
         + ", ".join(selected)
     )
     return {
@@ -882,55 +931,60 @@ def skill_tree_problem(source: Path, installed: Path) -> str | None:
 
 
 def doctor_skills_package(
-    bundle: dict[str, Any], clients: list[str], receipt: dict[str, Any] | None
+    bundle: dict[str, Any],
+    clients: list[str],
+    receipt: dict[str, Any] | None,
+    *,
+    bundle_name: str = "matt-pocock-skills",
 ) -> int:
-    resolved = (receipt or {}).get("resolved", {}).get("matt-pocock-skills")
+    display_name = bundle.get("displayName", bundle_name)
+    resolved = (receipt or {}).get("resolved", {}).get(bundle_name)
     if not isinstance(resolved, dict):
-        print("FAIL upstream Matt Pocock skills: install receipt is outdated; run update")
+        print(f"FAIL upstream {display_name}: install receipt is outdated; run update")
         return 1
     if resolved.get("status") == "pending":
-        print("FAIL upstream Matt Pocock skills: interrupted refresh is pending; run update")
+        print(f"FAIL upstream {display_name}: interrupted refresh is pending; run update")
         return 1
     commit = resolved.get("commit")
     expected = resolved.get("skills")
     targets = resolved.get("targets")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
-        print("FAIL upstream Matt Pocock skills: receipt has no exact source commit")
+        print(f"FAIL upstream {display_name}: receipt has no exact source commit")
         return 1
     if not isinstance(expected, dict) or not expected or not all(
         isinstance(name, str) and isinstance(relative, str)
         for name, relative in expected.items()
     ):
-        print("FAIL upstream Matt Pocock skills: receipt has no valid skill inventory")
+        print(f"FAIL upstream {display_name}: receipt has no valid skill inventory")
         return 1
     if not isinstance(targets, list) or not all(isinstance(path, str) for path in targets):
-        print("FAIL upstream Matt Pocock skills: receipt has no valid managed targets")
+        print(f"FAIL upstream {display_name}: receipt has no valid managed targets")
         return 1
     required_targets = {
         str(root) for root, _ in skill_destination_roots(clients_for(bundle, clients))
     }
     if not required_targets.issubset(set(targets)):
-        print("FAIL upstream Matt Pocock skills: selected client target is not receipted")
+        print(f"FAIL upstream {display_name}: selected client target is not receipted")
         return 1
     if resolved.get("repository") != bundle["repository"] or resolved.get("ref") != bundle.get(
         "ref", "main"
     ):
-        print("FAIL upstream Matt Pocock skills: receipt source identity does not match catalog")
+        print(f"FAIL upstream {display_name}: receipt source identity does not match catalog")
         return 1
-    checkout = STATE_DIR / "sources" / "matt-pocock-skills"
+    checkout = STATE_DIR / "sources" / bundle_name
     problem = checkout_problem(
         checkout, bundle["repository"], expected_commit=commit
     )
     if problem:
-        print(f"FAIL upstream Matt Pocock skills source: {problem}")
+        print(f"FAIL upstream {display_name} source: {problem}")
         return 1
     try:
-        discovered = discover_skill_package(checkout, bundle)
+        discovered = discover_skill_package(checkout, bundle, bundle_name=bundle_name)
     except UpstreamError as exc:
-        print(f"FAIL upstream Matt Pocock skills source: {exc}")
+        print(f"FAIL upstream {display_name} source: {exc}")
         return 1
     if discovered != expected:
-        print("FAIL upstream Matt Pocock skills: receipted inventory is not complete for its source commit")
+        print(f"FAIL upstream {display_name}: receipted inventory is not complete for its source commit")
         return 1
     failures = 0
     canonical = Path.home() / ".agents" / "skills"
@@ -943,7 +997,7 @@ def doctor_skills_package(
         installed = canonical / name
         source_problem = skill_tree_problem(source, installed)
         if source_problem:
-            print(f"FAIL upstream Matt Pocock skill source: {name} ({source_problem})")
+            print(f"FAIL upstream {display_name} skill source: {name} ({source_problem})")
             failures += 1
             continue
         for client in clients_for(bundle, clients):
@@ -951,12 +1005,12 @@ def doctor_skills_package(
             discovery_problem = skill_tree_problem(source, discovered)
             if discovery_problem:
                 print(
-                    f"FAIL upstream Matt Pocock skill discovery: {name} ({client}: {discovery_problem})"
+                    f"FAIL upstream {display_name} skill discovery: {name} ({client}: {discovery_problem})"
                 )
                 failures += 1
     if not failures:
         print(
-            f"PASS upstream Matt Pocock skills: {len(expected)} skills from "
+            f"PASS upstream {display_name}: {len(expected)} skill(s) from "
             f"{commit[:12]} discovered by {', '.join(clients)}"
         )
     return failures
@@ -1516,7 +1570,9 @@ def process_bundle(
         if bundle["kind"] == "graphify":
             return doctor_graphify(bundle, clients, receipt), None
         if bundle["kind"] == "skills-package":
-            return doctor_skills_package(bundle, clients, receipt), None
+            return doctor_skills_package(
+                bundle, clients, receipt, bundle_name=name
+            ), None
         if bundle["kind"] == "marketplace":
             return doctor_marketplace_bundle(bundle, clients), None
         if bundle["kind"] == "codex-official":
@@ -1542,6 +1598,7 @@ def process_bundle(
             receipt,
             adopt_existing=adopt_existing,
             profile=profile,
+            bundle_name=name,
         )
     elif bundle["kind"] == "marketplace":
         install_marketplace_bundle(bundle, clients, dry_run, update=update)

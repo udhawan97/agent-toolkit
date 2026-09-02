@@ -2,9 +2,17 @@
 
 ## 0.3.0 - Unreleased
 
+- Expanded the toolkit-owned plugin from three to all 15 redistribution-cleared personal skills: eight general workflows and seven public product or release guardrails, including the previously omitted cross-client `main-cleanup` workflow and the new `dev-review` production-review workflow.
 - Added the explicit-only `dev-review` workflow: one senior owner coordinates exactly three specialist developers across code, architecture, real user journeys, design craft, correctness, security, reliability, accessibility, performance, and delivery; produces a scored offline report with separate coverage confidence; and implements only run-bound findings selected by the user.
-- Added an owner-only, resumable review ledger with stable run-bound finding IDs, schema validation, atomic writes, writer locking, compare-and-swap updates, evidence/report digests, and research handoff state.
-- Kept audit, implementation, merge, push, release, deployment, live egress, and production mutations as separate authority boundaries.
+- Added an owner-only, resumable review ledger with stable run-bound finding IDs, schema validation, atomic writes, persistent advisory writer locking, compare-and-swap updates, evidence/report digests, and research handoff state.
+- Kept `dev-review` audit, implementation, merge, push, release, deployment, live egress, and production mutations as separate authority boundaries.
+- Kept Hallmark outside the owned payload because it is third-party software; external packages remain attributed upstream rather than being relabeled or vendored.
+- Made all six sensitive audit and action workflows explicit-only in both client metadata, defaulted release testing to read-only audit mode, and bound separately approved local-testing cleanup targets to an owner-only receipt before moving app bundles to Trash.
+- Removed developer-home assumptions from the imported workflows and made their dependencies resolve through installed skill names or the active checkout.
+- Kept the public catalog, Codex manifest, Claude manifest, marketplace metadata, plugin guide, compatibility notes, and main README synchronized with the shipped payload.
+- Preserved the same one-command install and update path: existing receipted installations receive the complete current plugin on refresh.
+- Added Hallmark as an attributed MIT upstream and Vercel's allowlisted composition, React-performance, and web-interface review skills for both clients; each mutable source update is exact-commit receipted, and shared guidance routes overlapping frontend work to the smallest relevant specialist.
+- Added explicit `auto-update enable|status|run|disable` management for current-user launchd, systemd timer, and Windows Task Scheduler jobs. Scheduled runs disable prerequisite installation and remain off until the user opts in.
 
 ## 0.2.0 - Unreleased
 

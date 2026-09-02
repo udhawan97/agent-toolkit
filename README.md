@@ -1,146 +1,189 @@
 <div align="center">
-  <img src="assets/brand/mark.svg" width="112" alt="Agent Toolkit logo">
-  <h1>Agent Toolkit</h1>
-  <p><strong>One command. One shared setup. Codex and Claude Code.</strong></p>
-  <p>Bring a complete, public-safe agent setup to a new machine—without manually installing Node, uv, plugins, skills, adapters, or MCP wiring.</p>
+  <img src="assets/brand/wordmark.svg" width="760" alt="Agent Toolkit — one portable setup for Codex and Claude Code">
+  <p><strong>Share your AI-agent setup like a product.</strong></p>
+  <p>Agent Toolkit turns reusable skills, plugins, tools, and guidance into one portable setup for <strong>Codex</strong>, <strong>Claude Code</strong>, or both—without transferring credentials or private workspace data between clients.</p>
   <p>
     <a href="#install"><strong>Install</strong></a>
-    · <a href="#what-you-get">What you get</a>
-    · <a href="docs/UPSTREAMS.md">Source ledger</a>
-    · <a href="docs/TROUBLESHOOTING.md">Help</a>
+    · <a href="#what-you-get">Explore the stack</a>
+    · <a href="#trust-by-design">Security model</a>
+    · <a href="#documentation">Documentation</a>
   </p>
   <p>
-    <a href="https://github.com/udhawan97/agent-toolkit/actions/workflows/validate.yml"><img alt="Validation status" src="https://github.com/udhawan97/agent-toolkit/actions/workflows/validate.yml/badge.svg?branch=stable"></a>
-    <img alt="Prerequisites assisted" src="https://img.shields.io/badge/prerequisites-assisted-23B8A6">
-    <img alt="Codex and Claude Code" src="https://img.shields.io/badge/agents-Codex%20%2B%20Claude%20Code-6C63FF">
-    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/toolkit-MIT-F5C36A"></a>
+    <a href="https://github.com/udhawan97/agent-toolkit/actions/workflows/validate.yml"><img alt="Stable validation status" src="https://github.com/udhawan97/agent-toolkit/actions/workflows/validate.yml/badge.svg?branch=stable"></a>
+    <img alt="Supports Codex and Claude Code" src="https://img.shields.io/badge/agents-Codex%20%2B%20Claude%20Code-6C63FF">
+    <img alt="0.3.0 unreleased integration candidate" src="https://img.shields.io/badge/status-0.3.0%20unreleased%20candidate-23B8A6">
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-F5C36A"></a>
   </p>
 </div>
 
+> **In plain English:** skills are reusable playbooks for an AI coding agent; plugins and MCP servers give it extra capabilities. This repository installs a reviewed collection of both and keeps the setup understandable, updateable, and removable.
+
 ## Install
 
-### macOS or Linux
+Run one command. The first launcher run installs the toolkit; later runs update it. The launcher finishes every successful install or update with a health check.
+
+**macOS or Linux**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh
 ```
 
-### Windows PowerShell
+**Windows PowerShell**
 
 ```powershell
 irm https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup.ps1 | iex
 ```
 
-> [!NOTE]
-> The full native install/update/doctor/uninstall journey is validated on macOS. Linux and Windows run repository and launcher checks in CI; their complete native-client lifecycle is still pending validation.
-
-That is the complete setup. It detects Codex, Claude Code, or both; installs every matching layer; and verifies what it installed. Run the same command later to update everything.
-
-### What you need first
-
-Have **Codex CLI, Claude Code, or both** installed. On macOS/Linux, the copy-paste command also uses the system's `curl` and POSIX shell. The launcher handles the remaining setup where a supported package manager is already available:
-
-- installs missing Git and Python 3.10+ with `venv` support through Homebrew, `apt`, `dnf`, `pacman`, `apk`, `zypper`, or Windows `winget` when available;
-- creates its own isolated Python environment for Graphify;
-- fetches the latest reviewed toolkit-owned skills from `stable`;
-- fetches **every current skill** from Matt Pocock's upstream `main` branch and records the exact commit it received;
-- connects the right plugins, adapters, guidance, and Obscura MCP registration for whichever clients it detects.
-
-No Node.js, `npx`, `uv`, or `pipx` setup is required.
-
-On macOS, automatic Git/Python installation uses an existing Homebrew installation. If Homebrew is unavailable, setup stops with the exact manual prerequisite instead of changing the machine unexpectedly.
+> [!WARNING]
+> These commands execute the current, mutable `stable` branch and can install missing Git or Python through a supported system package manager. Use the inspection path below if you want to review the exact checkout and dry-run the installer first.
 
 > [!IMPORTANT]
-> Nothing runs when you clone or download this repository. Setup starts only when you run it. The default profile fetches allowlisted packages from their original providers; review the readable [source ledger](docs/UPSTREAMS.md) first if you prefer.
+> Install [Codex CLI](https://developers.openai.com/codex/cli/) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) first. Agent Toolkit detects either client—or both—and installs only the matching integrations. Restart active client sessions when setup finishes.
 
-> [!TIP]
-> Prefer to manage system packages yourself? Set `AGENT_KIT_AUTO_PREREQS=0`. Provider logins still remain separate and happen only when a provider plugin needs them.
+<picture>
+  <source media="(max-width: 600px)" srcset="assets/diagrams/setup-overview-mobile.svg">
+  <img src="assets/diagrams/setup-overview.svg" alt="One command detects installed AI clients, installs the current stack, and checks the result">
+</picture>
 
 <details>
-<summary><strong>Inspect before running</strong></summary>
+<summary><strong>What can the launcher change?</strong></summary>
+
+The launcher can install missing Git and Python 3.10+ through a supported package manager, then creates an isolated Python environment for Graphify. It does **not** require Node.js, `npx`, `uv`, or `pipx`.
+
+On macOS, automatic prerequisite installation requires Homebrew. On Linux it supports `apt`, `dnf`, `pacman`, `apk`, or `zypper`; on Windows it supports `winget`. If no supported manager is available, setup stops and explains what to install manually. Set `AGENT_KIT_AUTO_PREREQS=0` to manage system packages yourself.
+
+</details>
+
+<details>
+<summary><strong>Prefer to inspect it before running?</strong></summary>
 
 ```bash
 git clone --branch stable --depth 1 https://github.com/udhawan97/agent-toolkit.git
 cd agent-toolkit
-python bin/agent-kit validate
-python bin/agent-kit install --dry-run
-python bin/agent-kit install
+python3 bin/agent-kit validate
+python3 bin/agent-kit install --source local --dry-run
+python3 bin/agent-kit install --source local
+python3 bin/agent-kit doctor
 ```
 
-A downloaded [stable ZIP](https://github.com/udhawan97/agent-toolkit/archive/refs/heads/stable.zip) is a manual-update installation. Extract it to a stable location and run `python bin/agent-kit install --source local`.
+Nothing runs merely because you clone or download the repository. A [stable ZIP](https://github.com/udhawan97/agent-toolkit/archive/refs/heads/stable.zip) is also available for manual installation. To inspect the unreleased candidate described here, clone `main` instead of `stable` and run the same validation and local-source dry-run commands before installing.
+
+```bash
+# Execute the mutable main candidate through its remote launcher, not stable
+AGENT_KIT_CHANNEL=main sh -c "$(curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/main/bin/setup)" -- install --clients both
+```
 
 </details>
 
-![A modular toolkit routing owned workflows, trusted upstream packages, and shared guidance to Codex and Claude Code](assets/brand/agent-toolkit-hero.png)
+> [!NOTE]
+> This README follows the unreleased 0.3.0 candidate on `main`. The one-line launchers intentionally use the reviewed `stable` channel and will pick up these changes only after promotion. A previous macOS core lifecycle covered 14 owned workflows; the current 15-workflow candidate and its `recommended` profile still need a fresh clean install/update/doctor run. Linux and Windows run repository and launcher checks in CI; native client lifecycle validation on those platforms is still pending.
+
+## Why it exists
+
+| The problem | The approach | The proof |
+| --- | --- | --- |
+| Agent setups drift between machines and clients. | One reviewed manifest targets Codex, Claude Code, or both. | `doctor` checks the installed result instead of assuming success. |
+| Updating tools by hand is slow and inconsistent. | The same command installs today and refreshes later; optional scheduled updates require explicit opt-in. | Receipts record each tracked skill source's exact commit and installed inventory, plus the toolkit's source, profile, ownership, and policy choices. |
+| Sharing dotfiles can leak private context. | Only explicit, sanitized templates and allowlisted packages are distributed. | Validation checks macOS, Linux, and Windows home paths, credential-bearing URLs, local documentation links, Git author metadata, and manifest-to-payload drift. |
 
 ## What you get
 
-```text
-Your command
-   │
-   ├── Personal workflows ─────── every public-safe skill in this toolkit
-   ├── Current upstream skills ── Graphify + all current Matt Pocock skills
-   ├── Provider essentials ────── official OpenAI + Anthropic marketplaces
-   ├── Local browser tool ─────── verified Obscura payload + exact MCP registration
-   └── Shared guidance ────────── sanitized CLAUDE.md + AGENTS.md blocks
-```
+The default `recommended` profile installs the complete public-safe stack.
 
-### Toolkit-owned workflows
+### Original workflows
 
-These are every personally created skill currently cleared for public redistribution in this repository. The reviewed [`catalog/personal-skills.json`](catalog/personal-skills.json) manifest must exactly match the plugin payload, so additions cannot be documented without being installed—or installed without being declared. Private, project-specific, account-bound, duplicate, and third-party skills stay out of the public package.
+The plugin contains all 15 toolkit-owned skills. Eight work across projects; seven preserve the contracts of public products and release paths. Review and audit remain distinct from implementation, publishing, and deployment.
 
-| Skill | Use it for |
+| Everyday workflow | What it helps you do |
 | --- | --- |
-| `dev-review` | Run a friendly senior production review with three specialist developers, a scored offline report, and approval-gated fixes. |
-| `tech-debt` | Trace architecture or stack debt to a real user consequence. |
-| `improve-userflow-design` | Audit complete journeys and improve only selected gaps. |
-| `council-review` | Challenge material findings through a two-round evidence gate. |
+| ⚖️ `council-review` | Challenge important results through a two-round evidence review. |
+| 🧑‍💻 `dev-review` | Run a friendly senior production review with three specialist developers, a scored offline report, and approval-gated fixes. |
+| 🧩 `improve-userflow-design` | Audit an end-to-end journey, then improve only the gaps you select. |
+| 🧪 `localtesting` | Build, install, verify, and safely preview duplicate local artifacts. |
+| 🔁 `loop-refine-release` | Run an explicitly requested implementation-to-local-merge refinement loop. |
+| 🧹 `main-cleanup` | Reconcile branches and worktrees without losing unique or uncommitted work. |
+| 📚 `refresh-docs` | Bring a README, website, visuals, and download story in sync with the product. |
+| 🧭 `tech-debt` | Connect architecture or stack debt to a real user consequence. |
 
-### Trusted upstream stack
+<details>
+<summary><strong>Seven public product and release guardrails</strong></summary>
 
-Outside packages are installed from their original repositories or official marketplaces. They are not silently republished here.
-
-| Layer | Included by the default profile |
+| Guardrail | Protects |
 | --- | --- |
-| Codebase understanding | Graphify and Understand Anything |
-| Planning and delivery | Every skill currently published on Matt Pocock's upstream `main`; the resolved commit and complete inventory are recorded locally |
-| Design communication | Diagram Design |
-| Simpler implementation | Ponytail |
-| Browser work | Obscura MCP, with archive, executable, worker, and registration checks |
-| Codex provider essentials | OpenAI app-building, visualization, security, and developer plugins; setup handles Codex's reserved official catalog automatically |
-| Claude provider essentials | Anthropic-authored setup, review, simplification, feature, design, security, and skill-authoring workflows, plus clearly attributed Playwright and Superpowers partner packages |
+| 💹 `folioorb-financial-integrity` | Financial data, portfolio metrics, persistence, updates, and releases. |
+| 🎯 `golavo-product-trust` | Forecast evidence, local models, data packs, packaging, and releases. |
+| 🗂️ `orifold-workflow` | Orifold product, implementation, packaging, cleanup, and release rules. |
+| 🚀 `releasegit` | A verified Orifold GitHub release from tests through public assets. |
+| ✅ `releasetesting` | Production-readiness evidence for the installed Orifold app. |
+| 🔎 `shipped-product-verification` | The real installed, downloaded, or deployed surface—not source alone. |
+| 🧳 `voyalier-product-contract` | Voyalier privacy, accessibility, pack, desktop, and release boundaries. |
 
-See every repository, license, package, and update policy in the [upstream source ledger](docs/UPSTREAMS.md).
+</details>
 
-### Sanitized shared guidance
+The reviewed [`catalog/personal-skills.json`](catalog/personal-skills.json) manifest must match the shipped plugin exactly. Private, account-bound, duplicate, and third-party skills stay out of the **owned** plugin. Approved third-party skills such as Hallmark stay attributed to their creators and are installed from the upstream allowlist instead. A public product-specific skill is included only when it is self-contained and free of personal paths or data.
 
-Setup merges one marked block into each detected client. It is modeled on a real working setup but contains no name, email, home path, account identifier, private memory, or project-specific rule.
+### Curated technical stack
 
-- [Claude Code template](templates/claude/CLAUDE.md)
-- [Codex template](templates/codex/AGENTS.md)
+Third-party packages come from their original repositories or official marketplaces; they are linked, verified, and recorded rather than silently republished here.
 
-The block covers concise communication, authority boundaries, browser routing, Superpowers/Ponytail precedence, and Graphify-first codebase navigation. Existing files are preserved and backed up. Use `--no-guidance` to skip it.
+| Job | Included |
+| --- | --- |
+| 🗺️ Understand a codebase | Graphify and Understand Anything |
+| 🛠️ Plan and deliver | Every skill currently published on Matt Pocock's upstream `main`, with the resolved commit and inventory recorded locally |
+| 🎨 Design distinctive interfaces | Hallmark from Nutlope/Together AI, kept third-party and commit-receipted |
+| ⚛️ Engineer frontend systems | Vercel's React performance, composition-pattern, and web-interface review skills |
+| 📐 Explain systems | Diagram Design |
+| ✂️ Keep implementations simple | Ponytail |
+| 🌐 Work with the browser | Obscura MCP with pinned payload and exact registration checks |
+| 🧱 Extend Codex | Essential OpenAI app-building, visualization, security, and developer plugins |
+| 🧠 Extend Claude Code | Anthropic-authored setup, review, simplification, feature, design, security, and skill-authoring workflows, plus attributed partner packages |
+| 📜 Align both clients | Sanitized [Codex `AGENTS.md`](templates/codex/AGENTS.md) and [Claude `CLAUDE.md`](templates/claude/CLAUDE.md) guidance blocks |
 
-## Pick a profile
+Every external source, license, package, and update rule is listed in the [upstream source ledger](docs/UPSTREAMS.md).
+
+Hallmark is the opinionated anti-template layer; Vercel's skills cover performance, component architecture, accessibility, and interface review. Anthropic's `frontend-design` remains part of the Claude provider bundle. Account-connected tools stay outside the default allowlist because they require user-specific connections and permissions.
+
+## Choose your setup
+
+Most people can keep the default. Profiles are available when you want a smaller surface.
 
 | Profile | Best for | Installs |
 | --- | --- | --- |
-| `recommended` | Most people | The complete public-safe stack shown above |
-| `skills-only` | No provider plugins or MCP | Owned workflows, Graphify, and Matt Pocock’s skills |
-| `full` | Automation that wants an explicit “everything” name | Same complete allowlist as `recommended` |
-| `--core-only` | Minimal or offline review | Only the four toolkit-owned workflows |
+| `recommended` | Most users | The complete public-safe stack above |
+| `skills-only` | No provider plugins or MCP | Original workflows, Graphify, Matt Pocock's skills, Hallmark, Vercel's frontend set, and shared guidance |
+| `full` | Automation that wants an explicit “everything” name | An alias of the same complete allowlist as `recommended` |
 
-Examples:
+For a minimal owned-workflow install, add `--core-only`. Add `--no-guidance` when you also want to leave existing global guidance untouched.
+
+<details>
+<summary><strong>Client and profile examples</strong></summary>
 
 ```bash
-python bin/agent-kit install --clients codex
-python bin/agent-kit install --clients claude --profile skills-only
-python bin/agent-kit install --clients both --core-only --no-guidance
+python3 bin/agent-kit install --clients codex
+python3 bin/agent-kit install --clients claude --profile skills-only
+python3 bin/agent-kit install --clients both --core-only --no-guidance
 ```
 
-## Try it
+</details>
 
-Restart active client sessions after setup.
+## Trust by design
+
+This is an installer, so its safety model is part of the product—not a footnote.
+
+| Principle | How Agent Toolkit applies it |
+| --- | --- |
+| **Explicit action** | Downloading or cloning does nothing. Setup begins only when you run it. |
+| **Allowlisted sources** | External packages must appear in the reviewed catalog and are fetched from their named providers. |
+| **Verifiable payloads** | Matt Pocock, Hallmark, and Vercel skill sources record exact commits; Obscura verifies its archive, executable, worker, and MCP command. |
+| **Safe ownership** | Receipts track plugin and marketplace ownership plus upstream managed targets. Unmanaged conflicts fail closed; changed skill trees adopted for management are backed up before replacement. |
+| **Private by default** | Setup does not transfer credentials or authentication state between clients or publish private context. Existing guidance may be preserved in private local backups when setup changes it. |
+| **Observable result** | `doctor` checks repository integrity, clients, plugins, skills, tools, enabled state, and MCP registration. |
+
+Mutable upstream branches still require trust when you update, and provider authentication remains a separate provider-controlled step. Read the full [security and privacy model](SECURITY.md) before using the installer in a sensitive environment.
+
+## Try a workflow
+
+Restart the client after installation, then ask for one of the toolkit-owned workflows.
 
 **Codex**
 
@@ -162,66 +205,82 @@ Use $tech-debt to audit how this stack affects the checkout journey. Audit only.
 /evidence-workflows:tech-debt Audit how this stack affects the checkout journey. Audit only.
 ```
 
-The audit workflows begin read-only. Implementation, push, release, deployment, and publication remain separate decisions.
+## Keep it current
 
-## How it stays maintainable
-
-![One repeatable command prepares prerequisites, detects clients, installs, verifies, and refreshes the setup](assets/diagrams/lifecycle.svg)
-
-![One canonical repository exposes owned workflows and an allowlisted upstream catalog through native client paths](assets/diagrams/architecture.svg)
-
-| Command | What it does |
+| Command | Result |
 | --- | --- |
-| same one-line command | Installs on a new machine; refreshes an existing installation, adds a newly detected second client using the saved profile, then runs `doctor`. |
-| `update` | Explicit form of the refresh: fast-forwards the toolkit, reinstalls its receipted personal workflows from that source, fetches Matt's current branch, and updates native marketplaces. |
-| `doctor` | Checks owned plugins, upstream skills/tools, MCP registration, and enabled state. |
-| `uninstall` | Removes receipt-owned Agent Toolkit plugins and optionally its guidance block. |
-
-> [!NOTE]
-> Third-party and provider packages remain owned by their original package managers. Agent Toolkit updates and verifies them, but deliberately does not mass-delete them during uninstall. This avoids removing tools another setup may also use.
-
-### Update
-
-Rerun the original install command, or use the explicit form:
+| Rerun the install command | Refreshes an existing install, adds a newly detected second client, and runs `doctor` |
+| `update` | Explicitly refreshes the toolkit, receipted workflows, tracked skill sources, and native marketplaces |
+| `auto-update enable` | Opts into a user-level daily or weekly schedule; never enabled during normal setup |
+| `auto-update status` / `run` / `disable` | Shows the schedule, runs the configured update now, or removes it without uninstalling anything |
+| `doctor` | Runs health checks; the one-line launcher may refresh prerequisites and its managed checkout first |
+| `uninstall` | Removes receipt-owned Agent Toolkit plugins and, optionally, its guidance block |
 
 ```bash
+# Update
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- update
-```
 
-Users of the original preview receive a one-time safety migration: the launcher preserves the old checkout beside the managed directory as `.legacy-<timestamp>-<pid>`, then clones the privacy-scrubbed history. It never deletes that backup automatically.
-
-### Verify
-
-```bash
+# Verify
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- doctor
-```
 
-### Remove the toolkit-owned layer
+# Optional: allow weekly automatic updates
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update enable --frequency weekly
 
-```bash
+# Optional: run the configured update now
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update run
+
+# Disable automatic updates
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update disable
+
+# Remove the toolkit-owned layer
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- uninstall --remove-guidance
 ```
 
-PowerShell accepts the same arguments through a downloaded script block; the [getting-started guide](docs/GETTING_STARTED.md) has copy-paste examples.
+> [!WARNING]
+> Each command above reruns the launcher. It may install missing Git/Python and fast-forward the managed checkout to the current `stable` branch before it performs the requested action. For inspection-first maintenance, enter a reviewed local checkout and run `python3 bin/agent-kit doctor` or `python3 bin/agent-kit uninstall` directly.
 
-## Privacy and trust
+Automatic updates are deliberately opt-in because they accept new code from the mutable GitHub channel recorded in the receipt (`stable` or `main`) and allowlisted upstream branches. They require an existing GitHub installation receipt; first installs and local checkouts remain manual. They run as the current user through launchd, a systemd user timer, or Windows Task Scheduler; scheduled runs set `AGENT_KIT_AUTO_PREREQS=0`, so they never install system prerequisites, and write their configuration and log under `.agent-toolkit/auto-update/`. A receipt records the selected source and resolved inputs for comparison, but does not make mutable upstream code an immutable release. Repository tests cover schedule configuration and command generation; native scheduler activation and the recommended-profile lifecycle remain separate verification gates. Disabling the schedule removes future runs but does not roll back an update already applied. If an unmanaged Hallmark or Vercel skill already exists, use `install --adopt-existing` for a first install or `update --adopt-existing` when adding it to an existing receipt; the copy is preserved before replacement, and later updates compare against the ownership receipt.
 
-| Boundary | Guarantee |
+Third-party packages remain owned by their original package managers, so uninstall does not mass-delete tools another setup may also use. PowerShell supports the same arguments; see [Getting started](docs/GETTING_STARTED.md) for copy-paste Windows examples.
+
+## Engineering decisions
+
+Agent Toolkit is intentionally more structured than a dotfiles bundle:
+
+- **Provider-neutral core:** original workflows use a shared skill format, while thin adapters expose them through each client's native paths.
+- **Idempotent lifecycle:** install and update reconcile the desired state; receipts make repeated runs and removal predictable.
+- **Supply-chain visibility:** allowlists, checksums, source URLs, exact commits where available, and inventories make external inputs inspectable.
+- **Fail-closed changes:** ambiguous ownership, malformed payloads, or stale verification stop the operation instead of guessing.
+- **Testable boundaries:** repository validation, launcher checks, disposable native-client tests, and public-surface scans exercise different risk layers.
+
+![One repository routes original workflows, upstream packages, and shared guidance through native Codex and Claude Code integrations](assets/diagrams/architecture.svg)
+
+<details>
+<summary><strong>Developer validation</strong></summary>
+
+```bash
+python3 bin/agent-kit validate --native
+python3 -m unittest discover -s tests -v
+sh -n bin/setup
+```
+
+Maintainers should read [Maintaining](docs/MAINTAINING.md) before changing manifests, profiles, bootstrap behavior, or bundled skills.
+
+</details>
+
+## Compatibility
+
+| Surface | Current verification boundary |
 | --- | --- |
-| Published toolkit | The sanitized public root and its reachable history contain no credentials, memories, personal paths, real names, account data, or private project rules. |
-| Third-party code | Fetched from the source listed in `catalog/upstreams.json`; not vendored into this repository. |
-| Matt Pocock skills | Every install/update fetches current `main`, validates each complete skill tree, records the exact commit, inventory, and targets, and archives receipt-owned skills removed upstream. Unmanaged conflicts are refused unless you explicitly use `--adopt-existing`; adopted copies are backed up before replacement. |
-| Graphify | Installed in a toolkit-managed virtual environment; every generated client skill pins the exact executable and `doctor` verifies that invocation contract. |
-| Obscura | Platform archive, executable, and worker are pinned and SHA-256 verified; MCP commands must match exactly. |
-| Guidance | Added as a marked block; existing content is retained and backed up. |
-| Core ownership | Receipt-controlled; setup refuses ambiguous marketplace or plugin ownership. |
-| Authentication | Never copied between Codex, Claude, GitHub, or provider plugins. |
+| macOS | Prior 0.3 core-profile dual-client lifecycle verified on the 14-workflow tree; current 15-workflow rerun pending |
+| Linux | Repository and launcher CI verified; native upstream lifecycle pending |
+| Windows | Repository and PowerShell launcher CI verified; native upstream lifecycle pending |
 
-Read [SECURITY.md](SECURITY.md) for the complete model.
+The `main` branch documents the unreleased 0.3.0 integration candidate. `stable` is the reviewed preview-install channel and may lag until promotion; no immutable `v*` release is claimed here. Exact client versions and the latest validation date live in [Compatibility](COMPATIBILITY.md).
 
-## Guides
+## Documentation
 
-| Guide | Open it when… |
+| Guide | Use it when… |
 | --- | --- |
 | [Getting started](docs/GETTING_STARTED.md) | You want alternate clients, profiles, or Windows commands. |
 | [Upstream source ledger](docs/UPSTREAMS.md) | You want to inspect every external source and update rule. |
@@ -229,15 +288,8 @@ Read [SECURITY.md](SECURITY.md) for the complete model.
 | [Testing](docs/TESTING.md) | You are verifying a disposable install or public candidate. |
 | [Maintaining](docs/MAINTAINING.md) | You are changing the catalog, installer, or stable channel. |
 
-## Status
-
-- `0.2.0` is a public preview, not an immutable tagged release.
-- `stable` is the reviewed one-line install channel.
-- `main` is integration work.
-- macOS receives the strongest local native lifecycle proof; Linux and Windows also run repository and launcher validation in CI.
-
 ---
 
 <div align="center">
-  <sub>Portable where it should be. Native where it matters. Private by default.</sub>
+  <sub><strong>Portable where it should be. Native where it matters. Private by default.</strong></sub>
 </div>

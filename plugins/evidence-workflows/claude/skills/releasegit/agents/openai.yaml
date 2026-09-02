@@ -1,0 +1,7 @@
+interface:
+  display_name: "ReleaseGit"
+  short_description: "Publish and verify an Orifold release"
+  default_prompt: "Use $releasegit only for the explicitly requested Orifold version and repository. Validate the exact candidate, publish through the documented release path, and verify the public artifacts without moving an existing release tag."
+
+policy:
+  allow_implicit_invocation: false

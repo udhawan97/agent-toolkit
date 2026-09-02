@@ -13,7 +13,7 @@ Automatic system-package setup supports Homebrew, `apt`, `dnf`, `pacman`, `apk`,
 
 Homebrew must already be available for automatic package installation on macOS. Without it, setup gives a manual Git/Python instruction and exits safely.
 
-The macOS native install and maintenance lifecycle is verified. Linux and Windows validation is configured in CI, while their native client lifecycles still need community verification.
+A prior macOS core-profile lifecycle covered 14 owned workflows; the current 15-workflow 0.3.0 candidate and its expanded profile still need a fresh clean install/update/doctor run. Linux and Windows validation is configured in CI, while their native client lifecycles still need community verification.
 
 ## Fast setup
 
@@ -37,8 +37,8 @@ The launcher stores its managed source checkout under the platform’s user data
 git clone --branch stable --depth 1 https://github.com/udhawan97/agent-toolkit.git
 cd agent-toolkit
 ./bin/agent-kit validate
-./bin/agent-kit install --dry-run
-./bin/agent-kit install
+./bin/agent-kit install --source local --dry-run
+./bin/agent-kit install --source local
 ```
 
 Windows users can replace `./bin/agent-kit` with `python bin/agent-kit`.
@@ -67,11 +67,11 @@ The default `auto` selection installs into every supported client found on `PATH
 
 | Profile | Includes |
 | --- | --- |
-| `recommended` | Complete public-safe stack: owned workflows, upstream tools, provider essentials, Obscura, and guidance |
-| `skills-only` | Owned workflows, Graphify, Matt Pocock's skills, and guidance |
+| `recommended` | Complete public-safe stack: owned workflows, tracked frontend skills, upstream tools, provider essentials, Obscura, and guidance |
+| `skills-only` | Owned workflows, Graphify, Matt Pocock's skills, Hallmark, Vercel's focused frontend set, and guidance |
 | `full` | Explicit alias for the complete allowlist in this preview |
 
-Use `--core-only` to skip every upstream package.
+Use `--core-only` to skip every upstream package. All 15 original workflows still install; orchestration skills use their bundled fallbacks where an optional upstream helper is absent.
 
 Remote Windows examples:
 
@@ -105,10 +105,12 @@ Skip it when needed:
 
 Restart active client sessions after installation.
 
+For example, ask for a read-only branch inventory or a user-flow audit:
+
 Codex prompt:
 
 ```text
-Use $improve-userflow-design to audit the primary journey. Do not edit anything.
+Use $main-cleanup to audit every branch and show what is safe to integrate. Do not change anything.
 ```
 
 Claude Code command:
@@ -116,6 +118,8 @@ Claude Code command:
 ```text
 /evidence-workflows:improve-userflow-design Audit the primary journey. Do not edit anything.
 ```
+
+All 15 original workflows use the same naming pattern. Product-specific guardrails activate only when their named public product or release path is in scope.
 
 ## Maintain the installation
 
@@ -135,6 +139,19 @@ Update:
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- update
 ```
 
+Optional weekly automatic updates:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update enable --frequency weekly
+```
+
+Check or disable the schedule:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update status
+curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- auto-update disable
+```
+
 Verify:
 
 ```bash
@@ -147,7 +164,16 @@ Uninstall:
 curl -fsSL https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup | sh -s -- uninstall
 ```
 
-Maintenance defaults come from `~/.agent-toolkit/state.json`. The core receipt records source, ref, selected profile, plugin and marketplace ownership, upstream opt-in, and guidance opt-in. Later `update` and `doctor` preserve `--core-only` and `--no-guidance` choices; when one new supported client appears on `PATH`, update applies the same saved policy to it automatically. `~/.agent-toolkit/upstreams.json` also records exact resolved upstream details, including the Matt Pocock source commit, full installed skill inventory, and managed targets.
+Maintenance defaults come from `~/.agent-toolkit/state.json`. The core receipt records source, ref, selected profile, plugin and marketplace ownership, upstream opt-in, and guidance opt-in. Later `update` and `doctor` preserve `--core-only` and `--no-guidance` choices; when one new supported client appears on `PATH`, update applies the same saved policy to it automatically. `~/.agent-toolkit/upstreams.json` also records exact resolved upstream details, including the Matt Pocock, Hallmark, and Vercel source commits, installed skill inventories, and managed targets.
+
+Scheduled updates are disabled unless the user runs `auto-update enable`. They require an existing GitHub installation receipt and follow the repository and channel recorded there (`stable` or `main`), run at the current-user level, set `AGENT_KIT_AUTO_PREREQS=0` so they do not install system prerequisites, and record configuration and output under `~/.agent-toolkit/auto-update/`. They are unavailable for local review or development checkouts. Disabling the schedule does not roll back an update already applied. Because automatic runs trust future channel and allowlisted upstream changes without a new prompt, use manual updates when you want to review each diff first.
+
+Windows uses the same command shape through a downloaded script block:
+
+```powershell
+$s = [scriptblock]::Create((irm https://raw.githubusercontent.com/udhawan97/agent-toolkit/stable/bin/setup.ps1))
+& $s auto-update enable --frequency weekly
+```
 
 Upstream packages remain owned by their original package managers. `uninstall` removes the toolkit-owned layer; it does not mass-delete provider or third-party packages.
 
@@ -157,7 +183,7 @@ Upstream packages remain owned by their original package managers. `uninstall` r
 # Track integration work instead of stable
 AGENT_KIT_CHANNEL=main ./bin/setup install
 
-# Explicitly adopt already installed matching plugins or conflicting Matt skill directories
+# Explicitly adopt already installed matching plugins or conflicting tracked skill directories
 ./bin/agent-kit install --adopt-existing
 
 # Remove the managed guidance block during uninstall

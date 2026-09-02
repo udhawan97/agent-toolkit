@@ -2,16 +2,16 @@
   "name": "agent-toolkit",
   "owner": {"name": "Agent Toolkit contributors"},
   "metadata": {
-    "description": "Portable evidence-led workflows for Claude Code and Codex"
+    "description": "Portable design, delivery, and evidence-led workflows for Claude Code and Codex"
   },
   "plugins": [
     {
       "name": "evidence-workflows",
       "source": "./plugins/evidence-workflows/claude",
-      "description": "Audit products and codebases with evidence, specialist developers, and production gates.",
+      "description": "Design, audit, test, document, and verify products with fifteen original workflows.",
       "version": "0.3.0",
       "category": "development",
-      "tags": ["architecture", "audit", "code-review", "evidence", "production", "user-flow"]
+      "tags": ["architecture", "audit", "code-review", "design", "documentation", "production", "release", "testing", "user-flow"]
     }
   ]
 }

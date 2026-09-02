@@ -7,7 +7,9 @@ import argparse
 import datetime as dt
 import json
 import os
+import plistlib
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -25,6 +27,10 @@ STATE_DIR = Path.home() / ".agent-toolkit"
 STATE_FILE = STATE_DIR / "state.json"
 BEGIN_MARKER = "<!-- BEGIN agent-toolkit:guidance -->"
 END_MARKER = "<!-- END agent-toolkit:guidance -->"
+AUTO_UPDATE_LABEL = "com.agent-toolkit.update"
+AUTO_UPDATE_DIR = STATE_DIR / "auto-update"
+AUTO_UPDATE_CONFIG = AUTO_UPDATE_DIR / "config.json"
+AUTO_UPDATE_LOG = AUTO_UPDATE_DIR / "update.log"
 STANDARD_SKILL_KEYS = {
     "name",
     "description",
@@ -32,6 +38,14 @@ STANDARD_SKILL_KEYS = {
     "compatibility",
     "metadata",
     "allowed-tools",
+}
+EXPLICIT_ONLY_SKILLS = {
+    "dev-review",
+    "improve-userflow-design",
+    "loop-refine-release",
+    "main-cleanup",
+    "releasegit",
+    "tech-debt",
 }
 
 
@@ -460,6 +474,355 @@ def atomic_write(target: Path, content: str, mode: int | None = None) -> None:
             temp_path.unlink()
 
 
+def auto_update_source() -> dict[str, str]:
+    state = load_state()
+    source = state.get("source") if state else None
+    if not isinstance(source, dict) or source.get("kind") != "github":
+        raise ToolkitError(
+            "Automatic updates require an installed GitHub source. "
+            "Local checkouts stay manual so the toolkit never overwrites developer work."
+        )
+    repo = source.get("repo")
+    channel = source.get("channel")
+    if not isinstance(repo, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo
+    ):
+        raise ToolkitError("Installation receipt has an invalid automatic-update repository")
+    if channel not in {"stable", "main"}:
+        raise ToolkitError("Installation receipt has an invalid automatic-update channel")
+    setup = ROOT / "bin" / ("setup.ps1" if os.name == "nt" else "setup")
+    if not setup.is_file():
+        raise ToolkitError(f"Automatic-update launcher is missing: {setup}")
+    return {"repo": repo, "channel": channel, "root": str(ROOT.resolve())}
+
+
+def shell_auto_update_wrapper(source: dict[str, str]) -> str:
+    values = {
+        "AGENT_KIT_REPO": source["repo"],
+        "AGENT_KIT_CHANNEL": source["channel"],
+        "AGENT_KIT_SOURCE_DIR": source["root"],
+        "AGENT_KIT_AUTO_PREREQS": "0",
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    }
+    log = shlex.quote(str(AUTO_UPDATE_LOG))
+    previous_log = shlex.quote(str(AUTO_UPDATE_LOG.with_suffix(".previous.log")))
+    lines = [
+        "#!/bin/sh",
+        "set -eu",
+        "umask 077",
+        f"if [ -f {log} ] && [ \"$(wc -c < {log})\" -gt 1048576 ]; then mv {log} {previous_log}; fi",
+        f"exec >> {log} 2>&1",
+    ]
+    lines.extend(f"export {name}={shlex.quote(value)}" for name, value in values.items())
+    lines.append(
+        "exec /bin/sh "
+        + shlex.quote(str(Path(source["root"]) / "bin" / "setup"))
+        + " update"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def powershell_auto_update_wrapper(source: dict[str, str]) -> str:
+    def quoted(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    values = {
+        "AGENT_KIT_REPO": source["repo"],
+        "AGENT_KIT_CHANNEL": source["channel"],
+        "AGENT_KIT_SOURCE_DIR": source["root"],
+        "AGENT_KIT_AUTO_PREREQS": "0",
+        "Path": os.environ.get("PATH", ""),
+    }
+    log = quoted(str(AUTO_UPDATE_LOG))
+    previous_log = quoted(str(AUTO_UPDATE_LOG.with_suffix(".previous.log")))
+    lines = [
+        "$ErrorActionPreference = 'Stop'",
+        f"if ((Test-Path -LiteralPath {log}) -and (Get-Item -LiteralPath {log}).Length -gt 1MB) {{ Move-Item -Force -LiteralPath {log} -Destination {previous_log} }}",
+    ]
+    lines.extend(f"$env:{name} = {quoted(value)}" for name, value in values.items())
+    setup = str(Path(source["root"]) / "bin" / "setup.ps1")
+    lines.extend(
+        [
+            f"& {quoted(setup)} update *>> {log}",
+            "exit $LASTEXITCODE",
+        ]
+    )
+    return "\r\n".join(lines) + "\r\n"
+
+
+def auto_update_platform() -> str:
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    raise ToolkitError(f"Automatic updates are not supported on {sys.platform}")
+
+
+def write_auto_update_wrapper(source: dict[str, str], platform_name: str) -> Path:
+    ensure_private_directory(AUTO_UPDATE_DIR)
+    if platform_name == "windows":
+        wrapper = AUTO_UPDATE_DIR / "run-update.ps1"
+        content = powershell_auto_update_wrapper(source)
+    else:
+        wrapper = AUTO_UPDATE_DIR / "run-update.sh"
+        content = shell_auto_update_wrapper(source)
+    atomic_write(wrapper, content, mode=0o700)
+    if os.name != "nt":
+        os.chmod(wrapper, 0o700)
+    return wrapper
+
+
+def systemd_quote(value: str) -> str:
+    if any(character in value for character in "\n\r\0"):
+        raise ToolkitError("Automatic-update path contains an unsupported control character")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def schedule_auto_update(
+    source: dict[str, str], frequency: str, platform_name: str, wrapper: Path
+) -> list[str]:
+    schedule_paths: list[str] = []
+    if platform_name == "macos":
+        launch_agents = Path.home() / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True, exist_ok=True)
+        plist_path = launch_agents / f"{AUTO_UPDATE_LABEL}.plist"
+        interval = {"Hour": 9, "Minute": 0}
+        if frequency == "weekly":
+            interval["Weekday"] = 2
+        payload = {
+            "Label": AUTO_UPDATE_LABEL,
+            "ProgramArguments": ["/bin/sh", str(wrapper)],
+            "StartCalendarInterval": interval,
+            "ProcessType": "Background",
+            "StandardOutPath": str(AUTO_UPDATE_LOG),
+            "StandardErrorPath": str(AUTO_UPDATE_LOG),
+        }
+        atomic_write(
+            plist_path,
+            plistlib.dumps(payload, fmt=plistlib.FMT_XML).decode("utf-8"),
+            mode=0o600,
+        )
+        domain = f"gui/{os.getuid()}"
+        subprocess.run(
+            ["launchctl", "bootout", domain, str(plist_path)],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        run(["launchctl", "bootstrap", domain, str(plist_path)])
+        schedule_paths.append(str(plist_path))
+    elif platform_name == "linux":
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            raise ToolkitError("Automatic updates on Linux require systemd user services")
+        unit_root = Path.home() / ".config" / "systemd" / "user"
+        unit_root.mkdir(parents=True, exist_ok=True)
+        service = unit_root / "agent-toolkit-update.service"
+        timer = unit_root / "agent-toolkit-update.timer"
+        atomic_write(
+            service,
+            "[Unit]\nDescription=Update Agent Toolkit\n\n"
+            "[Service]\nType=oneshot\nExecStart=/bin/sh "
+            + systemd_quote(str(wrapper))
+            + "\n",
+            mode=0o600,
+        )
+        calendar = "Mon *-*-* 09:00:00" if frequency == "weekly" else "*-*-* 09:00:00"
+        atomic_write(
+            timer,
+            "[Unit]\nDescription=Schedule Agent Toolkit updates\n\n"
+            f"[Timer]\nOnCalendar={calendar}\nPersistent=true\nRandomizedDelaySec=1h\n\n"
+            "[Install]\nWantedBy=timers.target\n",
+            mode=0o600,
+        )
+        run([systemctl, "--user", "daemon-reload"])
+        run([systemctl, "--user", "enable", "--now", timer.name])
+        schedule_paths.extend([str(service), str(timer)])
+    else:
+        scheduler = shutil.which("schtasks.exe") or shutil.which("schtasks")
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+        if not scheduler or not powershell:
+            raise ToolkitError("Automatic updates on Windows require Task Scheduler and PowerShell")
+        task_command = (
+            f'"{powershell}" -NoProfile -ExecutionPolicy Bypass -File "{wrapper}"'
+        )
+        command = [
+            scheduler,
+            "/Create",
+            "/TN",
+            "AgentToolkitUpdate",
+            "/TR",
+            task_command,
+            "/SC",
+            "WEEKLY" if frequency == "weekly" else "DAILY",
+            "/ST",
+            "09:00",
+            "/F",
+        ]
+        if frequency == "weekly":
+            command.extend(["/D", "MON"])
+        run(command)
+    return schedule_paths
+
+
+def auto_update_config() -> dict[str, Any] | None:
+    if not AUTO_UPDATE_CONFIG.exists():
+        return None
+    reject_symlink_destination(AUTO_UPDATE_CONFIG)
+    config = load_json(AUTO_UPDATE_CONFIG)
+    if (
+        not isinstance(config, dict)
+        or config.get("schemaVersion") != 1
+        or config.get("platform") not in {"macos", "linux", "windows"}
+        or config.get("frequency") not in {"daily", "weekly"}
+    ):
+        raise ToolkitError("Automatic-update configuration is invalid")
+    return config
+
+
+def remove_auto_update_schedule(platform_name: str) -> None:
+    if platform_name == "macos":
+        plist_path = Path.home() / "Library" / "LaunchAgents" / f"{AUTO_UPDATE_LABEL}.plist"
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{os.getuid()}", str(plist_path)],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if plist_path.is_file() or plist_path.is_symlink():
+            plist_path.unlink()
+    elif platform_name == "linux":
+        systemctl = shutil.which("systemctl")
+        if systemctl:
+            subprocess.run(
+                [systemctl, "--user", "disable", "--now", "agent-toolkit-update.timer"],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+        unit_root = Path.home() / ".config" / "systemd" / "user"
+        for name in ("agent-toolkit-update.service", "agent-toolkit-update.timer"):
+            target = unit_root / name
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+        if systemctl:
+            subprocess.run(
+                [systemctl, "--user", "daemon-reload"],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+    else:
+        scheduler = shutil.which("schtasks.exe") or shutil.which("schtasks")
+        if scheduler:
+            subprocess.run(
+                [scheduler, "/Delete", "/TN", "AgentToolkitUpdate", "/F"],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+
+
+def auto_update_schedule_active(platform_name: str) -> bool:
+    if platform_name == "macos":
+        completed = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{AUTO_UPDATE_LABEL}"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        return completed.returncode == 0
+    if platform_name == "linux":
+        systemctl = shutil.which("systemctl")
+        if not systemctl:
+            return False
+        completed = subprocess.run(
+            [systemctl, "--user", "is-enabled", "agent-toolkit-update.timer"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        return completed.returncode == 0 and completed.stdout.strip() == "enabled"
+    scheduler = shutil.which("schtasks.exe") or shutil.which("schtasks")
+    if not scheduler:
+        return False
+    completed = subprocess.run(
+        [scheduler, "/Query", "/TN", "AgentToolkitUpdate"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    return completed.returncode == 0
+
+
+def command_auto_update(args: argparse.Namespace) -> None:
+    if args.auto_action == "enable":
+        source = auto_update_source()
+        platform_name = auto_update_platform()
+        existing = auto_update_config()
+        if existing:
+            remove_auto_update_schedule(str(existing.get("platform", platform_name)))
+        wrapper = write_auto_update_wrapper(source, platform_name)
+        if not AUTO_UPDATE_LOG.exists():
+            atomic_write(AUTO_UPDATE_LOG, "", mode=0o600)
+        schedule_paths = schedule_auto_update(source, args.frequency, platform_name, wrapper)
+        payload = {
+            "schemaVersion": 1,
+            "platform": platform_name,
+            "frequency": args.frequency,
+            "source": source,
+            "wrapper": str(wrapper),
+            "schedulePaths": schedule_paths,
+            "enabledAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        atomic_write(AUTO_UPDATE_CONFIG, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        print(
+            f"Automatic updates enabled: {args.frequency} at about 09:00 local time. "
+            f"Log: {AUTO_UPDATE_LOG}"
+        )
+        print("Disable any time with: agent-kit auto-update disable")
+        return
+    config = auto_update_config()
+    if args.auto_action == "status":
+        if not config:
+            print("Automatic updates are disabled.")
+            return
+        active = auto_update_schedule_active(str(config.get("platform")))
+        print(
+            f"Automatic updates are {'active' if active else 'configured but inactive'} "
+            f"({config.get('frequency')}, {config.get('platform')}). Log: {AUTO_UPDATE_LOG}"
+        )
+        return
+    if args.auto_action == "run":
+        if not config:
+            raise ToolkitError("Automatic updates are disabled; enable them first")
+        wrapper = Path(str(config.get("wrapper", "")))
+        expected_wrapper = AUTO_UPDATE_DIR / (
+            "run-update.ps1" if config.get("platform") == "windows" else "run-update.sh"
+        )
+        if wrapper != expected_wrapper or not wrapper.is_file() or wrapper.is_symlink():
+            raise ToolkitError("Automatic-update wrapper is missing or unsafe")
+        command = (
+            [shutil.which("powershell.exe") or "powershell.exe", "-NoProfile", "-File", str(wrapper)]
+            if config.get("platform") == "windows"
+            else ["/bin/sh", str(wrapper)]
+        )
+        run(command)
+        return
+    platform_name = str(config.get("platform")) if config else auto_update_platform()
+    remove_auto_update_schedule(platform_name)
+    for target in (
+        AUTO_UPDATE_DIR / "run-update.sh",
+        AUTO_UPDATE_DIR / "run-update.ps1",
+        AUTO_UPDATE_CONFIG,
+    ):
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+    print("Automatic updates disabled. Existing toolkit installations are unchanged.")
+
+
 def merge_guidance(client: str, dry_run: bool) -> dict[str, str] | None:
     if client == "codex":
         target = client_config_root("codex") / "AGENTS.md"
@@ -513,6 +876,26 @@ def save_state(payload: dict[str, Any]) -> None:
     os.chmod(STATE_FILE, 0o600)
 
 
+def validate_markdown_links(document: Path, errors: list[str]) -> None:
+    text = document.read_text(encoding="utf-8")
+    for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
+        if target.startswith(("http://", "https://", "#", "mailto:")):
+            continue
+        clean = target.strip("<>").split("#", 1)[0]
+        if not clean:
+            continue
+        destination = (document.parent / clean).resolve()
+        try:
+            destination.relative_to(ROOT.resolve())
+        except ValueError:
+            errors.append(
+                f"relative link escapes repository in {document.relative_to(ROOT)}: {target}"
+            )
+            continue
+        if not destination.exists():
+            errors.append(f"broken relative link in {document.relative_to(ROOT)}: {target}")
+
+
 def validate_frontmatter(skill: Path, errors: list[str]) -> None:
     text = skill.read_text(encoding="utf-8")
     match = re.match(r"^---\n(.*?)\n---(?:\n|$)", text, re.DOTALL)
@@ -531,91 +914,85 @@ def validate_frontmatter(skill: Path, errors: list[str]) -> None:
         errors.append(f"missing frontmatter keys in {skill.relative_to(ROOT)}: {sorted(missing)}")
     if unexpected:
         errors.append(f"non-portable frontmatter in {skill.relative_to(ROOT)}: {sorted(unexpected)}")
-    for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
-        if target.startswith(("http://", "https://", "#", "mailto:")):
-            continue
-        destination = (skill.parent / target.split("#", 1)[0]).resolve()
-        try:
-            destination.relative_to(ROOT.resolve())
-        except ValueError:
-            errors.append(f"relative link escapes repository in {skill.relative_to(ROOT)}: {target}")
-            continue
-        if not destination.exists():
-            errors.append(f"broken relative link in {skill.relative_to(ROOT)}: {target}")
-
-
-def split_skill_document(skill: Path) -> tuple[dict[str, str], str] | None:
-    text = skill.read_text(encoding="utf-8")
-    match = re.match(r"^---\n(.*?)\n---(?:\n|$)", text, re.DOTALL)
-    if not match:
-        return None
-    values: dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        if not line or line.startswith((" ", "\t", "#")) or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        values[key] = value.strip()
-    return values, text[match.end() :]
+    if skill.parent.name in EXPLICIT_ONLY_SKILLS:
+        codex_metadata = skill.parent / "agents" / "openai.yaml"
+        if not codex_metadata.is_file() or not re.search(
+            r"^\s*allow_implicit_invocation:\s*false\s*$",
+            codex_metadata.read_text(encoding="utf-8") if codex_metadata.is_file() else "",
+            re.MULTILINE,
+        ):
+            errors.append(
+                f"action-bearing skill is not explicit-only for Codex: {skill.relative_to(ROOT)}"
+            )
+    for document in skill.parent.rglob("*.md"):
+        validate_markdown_links(document, errors)
 
 
 def validate_claude_adapter(
     canonical_root: Path, adapter_root: Path, errors: list[str]
 ) -> None:
-    if not adapter_root.is_dir():
-        errors.append(f"Claude skill adapter is missing: {adapter_root.relative_to(ROOT)}")
+    canonical = {path.parent.name: path for path in canonical_root.glob("*/SKILL.md")}
+    adapted = {path.parent.name: path for path in adapter_root.glob("*/SKILL.md")}
+    if set(canonical) != set(adapted):
+        errors.append("Codex and Claude skill adapters must expose the same skill names")
         return
-    canonical_files = {
-        path.relative_to(canonical_root): path
-        for path in canonical_root.rglob("*")
-        if path.is_file()
-        and not (
-            "__pycache__" in path.relative_to(canonical_root).parts
-            and path.suffix == ".pyc"
-        )
-    }
-    adapted_files = {
-        path.relative_to(adapter_root): path
-        for path in adapter_root.rglob("*")
-        if path.is_file()
-        and not (
-            "__pycache__" in path.relative_to(adapter_root).parts
-            and path.suffix == ".pyc"
-        )
-    }
-    if set(canonical_files) != set(adapted_files):
-        errors.append("Codex and Claude skill payloads must expose the same files")
-        return
-    for relative in sorted(canonical_files):
-        canonical = canonical_files[relative]
-        adapted = adapted_files[relative]
-        if relative.name != "SKILL.md":
-            if canonical.read_bytes() != adapted.read_bytes():
-                errors.append(f"Claude adapter payload drift: {relative}")
+    for name in sorted(canonical):
+        canonical_text = canonical[name].read_text(encoding="utf-8")
+        adapted_text = adapted[name].read_text(encoding="utf-8")
+        canonical_match = re.match(r"^---\n(.*?)\n---(?:\n|$)", canonical_text, re.DOTALL)
+        adapted_match = re.match(r"^---\n(.*?)\n---(?:\n|$)", adapted_text, re.DOTALL)
+        if not canonical_match or not adapted_match:
+            errors.append(f"invalid adapter frontmatter: {adapted[name].relative_to(ROOT)}")
             continue
-        canonical_document = split_skill_document(canonical)
-        adapted_document = split_skill_document(adapted)
-        if canonical_document is None or adapted_document is None:
-            errors.append(f"invalid Claude adapter frontmatter: {relative}")
-            continue
-        canonical_frontmatter, canonical_body = canonical_document
-        adapted_frontmatter, adapted_body = adapted_document
-        invocation_value = adapted_frontmatter.pop("disable-model-invocation", None)
+        canonical_frontmatter = canonical_match.group(1).splitlines()
+        adapted_frontmatter = [
+            line
+            for line in adapted_match.group(1).splitlines()
+            if not line.startswith("disable-model-invocation:")
+        ]
         if canonical_frontmatter != adapted_frontmatter:
-            errors.append(f"Claude adapter frontmatter differs beyond invocation control: {relative}")
-        if canonical_body != adapted_body:
-            errors.append(f"Claude adapter body differs from canonical payload: {relative}")
-        codex_metadata = canonical.parent / "agents" / "openai.yaml"
-        codex_explicit = codex_metadata.is_file() and bool(
-            re.search(
-                r"^\s*allow_implicit_invocation:\s*false\s*$",
-                codex_metadata.read_text(encoding="utf-8"),
-                re.MULTILINE,
+            errors.append(
+                f"Codex and Claude skill frontmatter differs beyond invocation control: {name}"
             )
+        if canonical_text[canonical_match.end() :] != adapted_text[adapted_match.end() :]:
+            errors.append(f"Codex and Claude skill bodies differ: {name}")
+        explicit = re.search(
+            r"^disable-model-invocation:\s*true\s*$", adapted_match.group(1), re.MULTILINE
         )
-        if codex_explicit and invocation_value != "true":
-            errors.append(f"explicit-only skill lacks Claude invocation guard: {relative}")
-        if not codex_explicit and invocation_value is not None:
-            errors.append(f"Claude invocation guard has no canonical Codex counterpart: {relative}")
+        if name in EXPLICIT_ONLY_SKILLS and not explicit:
+            errors.append(f"action-bearing skill is not explicit-only for Claude: {name}")
+        if name not in EXPLICIT_ONLY_SKILLS and explicit:
+            errors.append(f"non-action skill is unexpectedly explicit-only for Claude: {name}")
+        canonical_files = {
+            path.relative_to(canonical[name].parent)
+            for path in canonical[name].parent.rglob("*")
+            if path.is_file()
+            and path.name != "SKILL.md"
+            and not (
+                "__pycache__" in path.relative_to(canonical[name].parent).parts
+                and path.suffix == ".pyc"
+            )
+        }
+        adapted_files = {
+            path.relative_to(adapted[name].parent)
+            for path in adapted[name].parent.rglob("*")
+            if path.is_file()
+            and path.name != "SKILL.md"
+            and not (
+                "__pycache__" in path.relative_to(adapted[name].parent).parts
+                and path.suffix == ".pyc"
+            )
+        }
+        if canonical_files != adapted_files:
+            errors.append(f"Codex and Claude supporting files differ: {name}")
+        else:
+            for relative in canonical_files:
+                if (canonical[name].parent / relative).read_bytes() != (
+                    adapted[name].parent / relative
+                ).read_bytes():
+                    errors.append(f"Codex and Claude supporting file differs: {name}/{relative}")
+        for document in adapted[name].parent.rglob("*.md"):
+            validate_markdown_links(document, errors)
 
 
 def validate_public_surface(errors: list[str]) -> None:
@@ -659,6 +1036,22 @@ def validate_public_surface(errors: list[str]) -> None:
         errors.append("bin/agent-upstreams must exist and be executable")
 
 
+def privacy_markers(text: str) -> list[str]:
+    markers: list[str] = []
+    patterns = {
+        "macOS home path": re.escape("/" + "Users" + "/") + r"[^/\s]+/",
+        "Linux home path": re.escape("/" + "home" + "/") + r"[^/\s]+/",
+        "root home path": re.escape("/" + "root" + "/"),
+        "Windows home path": r"[A-Za-z]:" + re.escape("\\" + "Users" + "\\") + r"[^\\\s]+\\",
+        "UNC home path": r"\\\\[^\\\s]+\\(?:Users|home)\\[^\\\s]+\\",
+        "credential-bearing URL": r"https?://[^/\s@]+@",
+    }
+    for label, pattern in patterns.items():
+        if re.search(pattern, text):
+            markers.append(label)
+    return markers
+
+
 def validate_repo(native: bool = False) -> None:
     errors: list[str] = []
     validate_public_surface(errors)
@@ -690,17 +1083,12 @@ def validate_repo(native: bool = False) -> None:
         codex_manifest = load_json(plugin_dir / ".codex-plugin" / "plugin.json")
         claude_adapter = plugin_dir / "claude"
         claude_manifest = load_json(claude_adapter / ".claude-plugin" / "plugin.json")
-        canonical_claude_manifest = load_json(plugin_dir / ".claude-plugin" / "plugin.json")
         versions = {
             codex_manifest.get("version"),
             claude_manifest.get("version"),
             claude_entries.get(name, {}).get("version"),
         }
-        if (
-            codex_manifest.get("name") != name
-            or claude_manifest.get("name") != name
-            or canonical_claude_manifest != claude_manifest
-        ):
+        if codex_manifest.get("name") != name or claude_manifest.get("name") != name:
             errors.append(f"plugin folder and manifest names differ: {name}")
         if len(versions) != 1 or not re.fullmatch(r"\d+\.\d+\.\d+", str(next(iter(versions)))):
             errors.append(f"plugin versions are not matching strict semver: {name}")
@@ -741,6 +1129,8 @@ def validate_repo(native: bool = False) -> None:
                 for field in ("origin", "distribution")
             ):
                 errors.append(f"personal skill catalog entry lacks provenance fields: {name}")
+            elif metadata.get("scope") not in {"general", "public-product-guardrail"}:
+                errors.append(f"personal skill catalog entry has an invalid scope: {name}")
     tracked = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         check=False,
@@ -751,7 +1141,6 @@ def validate_repo(native: bool = False) -> None:
         public_paths = [ROOT / item.decode("utf-8") for item in tracked.stdout.split(b"\0") if item]
     else:
         public_paths = [path for path in ROOT.rglob("*") if ".git" not in path.parts]
-    absolute_home_markers = ("/" + "Users" + "/", "C:" + "\\" + "Users" + "\\")
     for path in public_paths:
         if path.is_symlink():
             errors.append(f"repository contains a symlink: {path.relative_to(ROOT)}")
@@ -760,9 +1149,8 @@ def validate_repo(native: bool = False) -> None:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
-            for forbidden in absolute_home_markers:
-                if forbidden in text:
-                    errors.append(f"personal path {forbidden!r} in {path.relative_to(ROOT)}")
+            for marker in privacy_markers(text):
+                errors.append(f"{marker} in {path.relative_to(ROOT)}")
     history = subprocess.run(
         ["git", "-C", str(ROOT), "log", "--all", "--format=%an%x00%ae"],
         check=False,
@@ -780,6 +1168,38 @@ def validate_repo(native: bool = False) -> None:
     if upstream_catalog.get("schemaVersion") != 1 or not isinstance(upstream_bundles, dict):
         errors.append("catalog/upstreams.json has an unsupported schema")
         upstream_bundles = {}
+    for bundle_name, bundle in upstream_bundles.items():
+        if not isinstance(bundle, dict):
+            errors.append(f"upstream bundle is not an object: {bundle_name}")
+            continue
+        if bundle.get("kind") == "skills-package":
+            repository = bundle.get("repository")
+            if not isinstance(repository, str) or github_repo_name(repository) != repository:
+                errors.append(f"skills package has an invalid GitHub repository: {bundle_name}")
+            ref = bundle.get("ref")
+            if not isinstance(ref, str) or not ref.strip():
+                errors.append(f"skills package has an invalid ref: {bundle_name}")
+            allowlist = bundle.get("skills")
+            if allowlist is not None:
+                if not isinstance(allowlist, dict) or not allowlist:
+                    errors.append(f"skills package has an invalid allowlist: {bundle_name}")
+                else:
+                    for skill_name, relative in allowlist.items():
+                        if not isinstance(skill_name, str) or not re.fullmatch(
+                            r"[a-z0-9]+(?:-[a-z0-9]+)*", skill_name
+                        ):
+                            errors.append(
+                                f"skills package has an unsafe skill name: {bundle_name}"
+                            )
+                        if (
+                            not isinstance(relative, str)
+                            or not relative
+                            or Path(relative).is_absolute()
+                            or ".." in Path(relative).parts
+                        ):
+                            errors.append(
+                                f"skills package has an unsafe skill path: {bundle_name}/{skill_name}"
+                            )
     for profile_path in (ROOT / "profiles").glob("*.json"):
         profile = load_json(profile_path)
         unknown = set(profile.get("plugins", [])) - plugin_names
@@ -1288,6 +1708,19 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="validate manifests, profiles, paths, and skill portability")
     validate.add_argument("--native", action="store_true")
     validate.set_defaults(handler=lambda args: validate_repo(native=args.native))
+    automatic = subparsers.add_parser(
+        "auto-update", help="manage explicit user-level scheduled updates"
+    )
+    automatic_actions = automatic.add_subparsers(dest="auto_action", required=True)
+    automatic_enable = automatic_actions.add_parser(
+        "enable", help="enable permissioned background updates"
+    )
+    automatic_enable.add_argument(
+        "--frequency", choices=("daily", "weekly"), default="weekly"
+    )
+    for action in ("disable", "status", "run"):
+        automatic_actions.add_parser(action)
+    automatic.set_defaults(handler=command_auto_update)
     return parser
 
 

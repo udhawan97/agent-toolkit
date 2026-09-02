@@ -13,12 +13,14 @@ usage() {
 Agent Toolkit setup
 
 Usage:
-  setup [install|update|doctor|uninstall] [agent-kit options]
+  setup [install|update|doctor|uninstall|auto-update] [agent-kit options]
 
 Examples:
   setup
   setup install --clients both --profile recommended
   setup update
+  setup auto-update enable --frequency weekly
+  setup auto-update disable
   setup doctor --native
   setup uninstall --remove-guidance
 
@@ -159,7 +161,7 @@ case "$action" in
     usage
     exit 0
     ;;
-  install|update|doctor|uninstall) ;;
+  install|update|doctor|uninstall|auto-update) ;;
   *)
     usage >&2
     fail "unknown action: $action"
@@ -191,6 +193,9 @@ case "$action" in
     ;;
   uninstall)
     exec "$python_command" "$TOOLKIT_SOURCE_DIR/bin/agent-kit" uninstall "$@"
+    ;;
+  auto-update)
+    exec "$python_command" "$TOOLKIT_SOURCE_DIR/bin/agent-kit" auto-update "$@"
     ;;
 esac
 

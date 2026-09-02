@@ -23,6 +23,38 @@
       "updatePolicy": "Fetch the current upstream branch on every install and update, validate every discovered skill tree, copy all skills, and record the exact resolved commit.",
       "clients": ["codex", "claude"]
     },
+    "hallmark": {
+      "kind": "skills-package",
+      "displayName": "Hallmark",
+      "description": "An opinionated anti-template design workflow for building, auditing, redesigning, and studying interfaces.",
+      "homepage": "https://github.com/nutlope/hallmark",
+      "license": "MIT",
+      "repository": "nutlope/hallmark",
+      "ref": "main",
+      "skillRoot": "skills",
+      "skills": {
+        "hallmark": "skills/hallmark"
+      },
+      "updatePolicy": "Fetch the current upstream branch on every install and update, validate only the allowlisted Hallmark skill tree, and record the exact resolved commit and managed targets.",
+      "clients": ["codex", "claude"]
+    },
+    "vercel-frontend-skills": {
+      "kind": "skills-package",
+      "displayName": "Vercel Frontend Skills",
+      "description": "Focused React performance, component-composition, and web-interface review guidance from Vercel.",
+      "homepage": "https://github.com/vercel-labs/agent-skills",
+      "license": "Per selected skill; MIT signals",
+      "repository": "vercel-labs/agent-skills",
+      "ref": "main",
+      "skillRoot": "skills",
+      "skills": {
+        "composition-patterns": "skills/composition-patterns",
+        "react-best-practices": "skills/react-best-practices",
+        "web-design-guidelines": "skills/web-design-guidelines"
+      },
+      "updatePolicy": "Fetch the current upstream branch on every install and update, validate only the three allowlisted frontend skill trees, and record the exact resolved commit and managed targets.",
+      "clients": ["codex", "claude"]
+    },
     "diagram-design": {
       "kind": "marketplace",
       "displayName": "Diagram Design",

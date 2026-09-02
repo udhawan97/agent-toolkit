@@ -1,6 +1,6 @@
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("install", "update", "doctor", "uninstall", "help")]
+    [ValidateSet("install", "update", "doctor", "uninstall", "auto-update", "help")]
     [string]$Action = "install",
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -23,12 +23,14 @@ function Show-Usage {
 Agent Toolkit setup
 
 Usage:
-  .\setup.ps1 [install|update|doctor|uninstall] [agent-kit options]
+  .\setup.ps1 [install|update|doctor|uninstall|auto-update] [agent-kit options]
 
 Examples:
   .\setup.ps1
   .\setup.ps1 install --clients both --profile recommended
   .\setup.ps1 update
+  .\setup.ps1 auto-update enable --frequency weekly
+  .\setup.ps1 auto-update disable
   .\setup.ps1 doctor --native
   .\setup.ps1 uninstall --remove-guidance
 
