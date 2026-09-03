@@ -346,7 +346,8 @@ class AutomaticUpdateTests(unittest.TestCase):
                 {"Hour": 9, "Minute": 0, "Weekday": 2},
             )
             self.assertEqual(payload["StandardOutPath"], str(log))
-            self.assertEqual(plist_path.stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual(plist_path.stat().st_mode & 0o777, 0o600)
             self.assertIn("bootout", raw_run.call_args.args[0])
             self.assertIn("bootstrap", checked_run.call_args.args[0])
 
