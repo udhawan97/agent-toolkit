@@ -332,6 +332,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 patch.object(self.module, "AUTO_UPDATE_LOG", log),
                 patch.object(self.module.subprocess, "run") as raw_run,
                 patch.object(self.module, "run") as checked_run,
+                patch.object(self.module.os, "getuid", return_value=501, create=True),
             ):
                 paths = self.module.schedule_auto_update(
                     source, "weekly", "macos", wrapper
@@ -369,7 +370,10 @@ class AutomaticUpdateTests(unittest.TestCase):
             service = unit_root / "agent-toolkit-update.service"
             timer = unit_root / "agent-toolkit-update.timer"
             self.assertEqual(paths, [str(service), str(timer)])
-            self.assertIn(f'ExecStart=/bin/sh "{wrapper}"', service.read_text(encoding="utf-8"))
+            self.assertIn(
+                f"ExecStart=/bin/sh {self.module.systemd_quote(str(wrapper))}",
+                service.read_text(encoding="utf-8"),
+            )
             timer_text = timer.read_text(encoding="utf-8")
             self.assertIn("OnCalendar=*-*-* 09:00:00", timer_text)
             self.assertIn("Persistent=true", timer_text)
@@ -632,9 +636,17 @@ class UpstreamSafetyTests(unittest.TestCase):
             errors: list[str] = []
             with patch.object(module, "ROOT", root):
                 module.validate_frontmatter(skill, errors)
+            relative_reference = (
+                Path("plugins")
+                / "example"
+                / "skills"
+                / "sample"
+                / "references"
+                / "guide.md"
+            )
             self.assertEqual(
                 errors,
-                ["broken relative link in plugins/example/skills/sample/references/guide.md: missing.md"],
+                [f"broken relative link in {relative_reference}: missing.md"],
             )
 
     def test_privacy_scan_catches_cross_platform_homes_and_url_credentials(self) -> None:
